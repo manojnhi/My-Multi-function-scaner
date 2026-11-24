@@ -50,6 +50,13 @@ jobs:
             [ -f "$f" ] && sed -i 's/flutter\.minSdkVersion/24/' "$f" || true
           done
       - run: flutter pub get
+      - name: Patch plugins for the newer Android Gradle Plugin
+        run: |
+          # Old plugins still ask for proguard-android.txt, which the new Android build tools reject.
+          grep -rl "proguard-android.txt" "$HOME/.pub-cache/hosted" --include=build.gradle 2>/dev/null | while read -r f; do
+            echo "patching $f"
+            sed -i 's/proguard-android\.txt/proguard-android-optimize.txt/g' "$f"
+          done
       - run: flutter build apk --release --no-shrink
       - uses: actions/upload-artifact@v4
         with:
