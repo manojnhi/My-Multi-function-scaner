@@ -89,13 +89,15 @@ jobs:
           channel: stable
           cache: true
       - run: flutter create --platforms=windows --project-name my_multi_functional_scanner .
+      # The Windows build does not use the WebView plugins (they fail to compile with the newest Visual Studio).
+      - run: flutter pub remove flutter_inappwebview permission_handler shared_preferences
       - run: flutter pub get
       - name: Apply app logo (EXE icon)
         run: Copy-Item branding\app_icon.ico windows\runner\resources\app_icon.ico -Force
       - name: Build Windows release
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-        run: flutter build windows --release
+        run: flutter build windows --release -t lib/main_windows.dart
       - name: Add the server to the app folder
         run: |
           Copy-Item windows_server build\windows\x64\runner\Release\server -Recurse -Force
