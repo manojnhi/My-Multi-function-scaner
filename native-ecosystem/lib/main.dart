@@ -5,8 +5,14 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   if (Platform.isWindows || Platform.isLinux) {
-    sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
+    // Local database is optional at startup: never let a missing sqlite3.dll
+    // stop the app window from opening.
+    try {
+      sqfliteFfiInit();
+      databaseFactory = databaseFactoryFfi;
+    } catch (e) {
+      debugPrint('SQLite init skipped: $e');
+    }
   }
   runApp(const MyMultiFunctionalScannerApp());
 }
