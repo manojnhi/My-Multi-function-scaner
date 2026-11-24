@@ -17,7 +17,7 @@ import {
   writeDb,
 } from './server/store.ts';
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 const NATIVE_DIR = path.resolve(process.cwd(), 'native-ecosystem');
 const FIREBASE_CERTS_URL =
