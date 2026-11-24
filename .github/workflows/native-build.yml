@@ -23,7 +23,14 @@ jobs:
           cache: true
       # Generates missing platform scaffolding (AndroidManifest, gradle wrapper, ...)
       # without overwriting the files already in the repo.
+      # Drop the legacy hand-written gradle files; Flutter generates a matching, up-to-date setup.
+      - run: rm -f android/app/build.gradle android/app/proguard-rules.pro
       - run: flutter create --platforms=android --org com.scanner --project-name my_multi_functional_scanner .
+      - name: Set minSdk 24
+        run: |
+          for f in android/app/build.gradle android/app/build.gradle.kts; do
+            [ -f "$f" ] && sed -i 's/flutter\.minSdkVersion/24/' "$f" || true
+          done
       - run: flutter pub get
       - run: flutter build apk --release
       - uses: actions/upload-artifact@v4
