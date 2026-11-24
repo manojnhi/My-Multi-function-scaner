@@ -17,10 +17,7 @@ Future<void> main() async {
 
   // Stop the embedded server when the Windows app is closed.
   AppLifecycleListener(
-    onExitRequested: () async {
-      _serverProcess?.kill();
-      return AppExitResponse.exit;
-    },
+    onDetach: () => _serverProcess?.kill(),
   );
 
   if (Platform.isAndroid) {
@@ -341,22 +338,3 @@ class MessageScreen extends StatelessWidget {
         width: double.infinity,
         padding: const EdgeInsets.all(24),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            if (busy) const CircularProgressIndicator(),
-            if (busy) const SizedBox(height: 20),
-            Text(message, textAlign: TextAlign.center),
-            if (actionLabel != null) ...[
-              const SizedBox(height: 16),
-              FilledButton(onPressed: onAction, child: Text(actionLabel!)),
-            ],
-            if (secondaryLabel != null) ...[
-              const SizedBox(height: 8),
-              TextButton(onPressed: onSecondary, child: Text(secondaryLabel!)),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
