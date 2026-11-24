@@ -21,9 +21,24 @@ export function DesktopPairingPanel({
   const [qrDataUrl, setQrDataUrl] = useState('');
   const [copied, setCopied] = useState(false);
 
+  // When the app is opened as http://localhost, other devices cannot reach that address,
+  // so ask the server for its Wi-Fi (LAN) address instead.
+  const [lanOrigin, setLanOrigin] = useState('');
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const host = window.location.hostname;
+    if (host !== 'localhost' && host !== '127.0.0.1') return;
+    fetch('/api/lan-info')
+      .then((r) => r.json())
+      .then((d: { urls?: string[] }) => {
+        if (d.urls && d.urls.length > 0) setLanOrigin(d.urls[0]);
+      })
+      .catch(() => undefined);
+  }, []);
+
   const pairUrl =
     typeof window !== 'undefined' && pairCode
-      ? `${window.location.origin}/?pair=${pairCode}&mode=mobile`
+      ? `${lanOrigin || window.location.origin}/?pair=${pairCode}&mode=mobile`
       : '';
 
   useEffect(() => {

@@ -2,6 +2,8 @@ import crypto from 'crypto';
 import express from 'express';
 import fs from 'fs';
 import http from 'http';
+import https from 'https';
+import os from 'os';
 import path from 'path';
 import { WebSocket, WebSocketServer } from 'ws';
 import {
@@ -18,14 +20,18 @@ import {
 } from './server/store.ts';
 
 const PORT = Number(process.env.PORT) || 3000;
+// Optional second listener with a self-signed certificate (needed for camera access on phones).
+const HTTPS_PORT = Number(process.env.HTTPS_PORT) || 0;
+// Folder holding dist/, firebase-applet-config.json, ... (defaults to the current directory).
+const APP_ROOT = process.env.APP_ROOT || process.cwd();
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
-const NATIVE_DIR = path.resolve(process.cwd(), 'native-ecosystem');
+const NATIVE_DIR = path.resolve(APP_ROOT, 'native-ecosystem');
 const FIREBASE_CERTS_URL =
   'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com';
 
 function loadFirebaseProjectId(): string {
   try {
-    const cfgPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
+    const cfgPath = path.resolve(APP_ROOT, 'firebase-applet-config.json');
     if (fs.existsSync(cfgPath)) {
       const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as { projectId?: string };
       if (parsed.projectId) return parsed.projectId;
@@ -918,9 +924,41 @@ async function startServer() {
     }
   });
 
+  function lanAddresses(): string[] {
+    const out: string[] = [];
+    for (const list of Object.values(os.networkInterfaces())) {
+      for (const ni of list || []) {
+        if (ni.family === 'IPv4' && !ni.internal) out.push(ni.address);
+      }
+    }
+    return out;
+  }
+
+  // Lets the UI build a pairing link that other devices on the Wi-Fi can open.
+  app.get('/api/lan-info', (_req, res) => {
+    const urls: string[] = [];
+    for (const ip of lanAddresses()) {
+      if (HTTPS_PORT) urls.push(`https://${ip}:${HTTPS_PORT}`);
+      urls.push(`http://${ip}:${PORT}`);
+    }
+    res.json({ urls });
+  });
+
   // HTTP Server + WebSocket Server
   const server = http.createServer(app);
-  const wss = new WebSocketServer({ server, path: '/ws' });
+  let httpsServer: https.Server | null = null;
+  const wss = new WebSocketServer({ noServer: true });
+  const attachUpgrade = (target: any) => {
+    target.on('upgrade', (req: http.IncomingMessage, socket: any, head: Buffer) => {
+      const pathname = (req.url || '').split('?')[0];
+      if (pathname === '/ws') {
+        wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+      } else {
+        socket.destroy();
+      }
+    });
+  };
+  attachUpgrade(server);
   const clients = new Set<WsClientMeta>();
 
   function broadcastToChannel(pairCode: string, payload: Record<string, unknown>, excludeWs?: WebSocket) {
@@ -1119,7 +1157,7 @@ async function startServer() {
         .catch(next);
     });
   } else {
-    const distDir = path.resolve(process.cwd(), 'dist');
+    const distDir = path.resolve(APP_ROOT, 'dist');
     app.use(express.static(distDir));
     app.get('*', (_req, res) => {
       res.sendFile(path.resolve(distDir, 'index.html'));
@@ -1146,6 +1184,45 @@ async function startServer() {
     console.log(`My Multi Functional Scanner running at http://0.0.0.0:${PORT}`);
   });
 
+  if (HTTPS_PORT) {
+    try {
+      const dataDir = process.env.DATA_DIR || path.resolve(process.cwd(), 'data');
+      const certDir = path.resolve(dataDir, 'cert');
+      const keyPath = path.resolve(certDir, 'key.pem');
+      const certPath = path.resolve(certDir, 'cert.pem');
+      if (!fs.existsSync(keyPath) || !fs.existsSync(certPath)) {
+        const mod: any = await import('selfsigned');
+        const generate = mod.generate ?? mod.default?.generate;
+        const altNames: Array<Record<string, unknown>> = [
+          { type: 2, value: 'localhost' },
+          { type: 7, ip: '127.0.0.1' },
+          ...lanAddresses().map((ip) => ({ type: 7, ip })),
+        ];
+        const pems = await Promise.resolve(
+          generate([{ name: 'commonName', value: 'My Multi Functional Scanner' }], {
+            days: 3650,
+            keySize: 2048,
+            algorithm: 'sha256',
+            extensions: [{ name: 'subjectAltName', altNames }],
+          })
+        );
+        fs.mkdirSync(certDir, { recursive: true });
+        fs.writeFileSync(keyPath, pems.private);
+        fs.writeFileSync(certPath, pems.cert);
+      }
+      httpsServer = https.createServer(
+        { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) },
+        app
+      );
+      attachUpgrade(httpsServer);
+      httpsServer.listen(HTTPS_PORT, '0.0.0.0', () => {
+        console.log(`HTTPS (self-signed) listening on https://0.0.0.0:${HTTPS_PORT}`);
+      });
+    } catch (err) {
+      console.error('HTTPS listener could not start (continuing with HTTP only):', err);
+    }
+  }
+
   let shuttingDown = false;
   const gracefulShutdown = async () => {
     if (shuttingDown) return;
@@ -1159,6 +1236,7 @@ async function startServer() {
         }
       }
       wss.close();
+      httpsServer?.close();
       await Promise.race([
         new Promise<void>((resolve) => server.close(() => resolve())),
         new Promise<void>((resolve) => setTimeout(resolve, 1500)),

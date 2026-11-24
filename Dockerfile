@@ -1,6 +1,6 @@
 FROM node:22-slim AS build
 WORKDIR /app
-COPY package.json package-lock.json* bun.lock* ./
+COPY package.json .npmrc package-lock.json* ./
 RUN npm install --no-audit --no-fund
 COPY . .
 RUN npm run build
@@ -8,7 +8,7 @@ RUN npm run build
 FROM node:22-slim
 WORKDIR /app
 ENV NODE_ENV=production PORT=3000
-COPY package.json package-lock.json* ./
+COPY package.json .npmrc package-lock.json* ./
 RUN npm install --omit=dev --no-audit --no-fund
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/dist-server ./dist-server

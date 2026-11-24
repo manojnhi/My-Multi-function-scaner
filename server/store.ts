@@ -65,7 +65,9 @@ interface DatabaseFile {
   pairings: Record<string, PairingSession>;
 }
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
+const DATA_DIR = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.resolve(process.cwd(), 'data');
 export const VAULT_DIR = path.resolve(DATA_DIR, 'vault');
 const DB_PATH = path.resolve(DATA_DIR, 'db.json');
 
