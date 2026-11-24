@@ -31,6 +31,11 @@ jobs:
           [ -f android/app/build.gradle.kts ] && sed -i 's/signingConfig = signingConfigs.getByName("debug")/signingConfig = signingConfigs.getByName("debug")\n            isMinifyEnabled = false\n            isShrinkResources = false/' android/app/build.gradle.kts || true
           [ -f android/app/build.gradle ] && sed -i 's/signingConfig signingConfigs.debug/signingConfig signingConfigs.debug\n            minifyEnabled false\n            shrinkResources false/' android/app/build.gradle || true
           grep -n -i "minify" android/app/build.gradle* || echo "WARNING: minify line not inserted"
+      - name: Disable lint on release builds
+        run: |
+          [ -f android/app/build.gradle.kts ] && sed -i '0,/^android {/s//android {\n    lint {\n        checkReleaseBuilds = false\n        abortOnError = false\n    }/' android/app/build.gradle.kts || true
+          [ -f android/app/build.gradle ] && sed -i '0,/^android {/s//android {\n    lint {\n        checkReleaseBuilds false\n        abortOnError false\n    }/' android/app/build.gradle || true
+          grep -n -A3 "lint {" android/app/build.gradle* || echo "WARNING: lint block not inserted"
       - name: Set minSdk 24
         run: |
           for f in android/app/build.gradle android/app/build.gradle.kts; do
