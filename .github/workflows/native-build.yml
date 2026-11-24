@@ -21,11 +21,19 @@ jobs:
         with:
           channel: stable
           cache: true
-      # Generates missing platform scaffolding (AndroidManifest, gradle wrapper, ...)
-      # without overwriting the files already in the repo.
       # Drop the legacy hand-written gradle files; Flutter generates a matching, up-to-date setup.
       - run: rm -f android/app/build.gradle android/app/proguard-rules.pro
       - run: flutter create --platforms=android --org com.scanner --project-name my_multi_functional_scanner .
+      - name: Apply app logo (launcher icons)
+        run: |
+          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            cp branding/android/ic_launcher_$d.png android/app/src/main/res/mipmap-$d/ic_launcher.png
+          done
+      - name: Android permissions (internet, camera, http on local network)
+        run: |
+          M=android/app/src/main/AndroidManifest.xml
+          sed -i '0,/<application/s##<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.CAMERA"/>\n    <application android:usesCleartextTraffic="true"#' "$M"
+          grep -n "uses-permission\|usesCleartextTraffic" "$M"
       - name: Disable R8 minify
         run: |
           [ -f android/app/build.gradle.kts ] && sed -i 's/signingConfig = signingConfigs.getByName("debug")/signingConfig = signingConfigs.getByName("debug")\n            isMinifyEnabled = false\n            isShrinkResources = false/' android/app/build.gradle.kts || true
@@ -55,16 +63,59 @@ jobs:
         working-directory: native-ecosystem
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build web app + bundle the server with Node
+        shell: bash
+        working-directory: .
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+          npx esbuild server.ts --bundle --platform=node --format=cjs --external:vite --outfile=native-ecosystem/windows_server/server.cjs
+          cp -r dist native-ecosystem/windows_server/dist
+          cp firebase-applet-config.json native-ecosystem/windows_server/
+          cp "$(which node)" native-ecosystem/windows_server/node.exe
+          ls -la native-ecosystem/windows_server
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
       - run: flutter create --platforms=windows --project-name my_multi_functional_scanner .
       - run: flutter pub get
+      - name: Apply app logo (EXE icon)
+        run: Copy-Item branding\app_icon.ico windows\runner\resources\app_icon.ico -Force
       - name: Build Windows release
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: flutter build windows --release
+      - name: Add the server to the app folder
+        run: |
+          Copy-Item windows_server build\windows\x64\runner\Release\server -Recurse -Force
+          Get-ChildItem build\windows\x64\runner\Release\server | Select-Object Name, Length
+      - name: Bundle Visual C++ runtime DLLs
+        run: |
+          foreach ($d in "msvcp140.dll","vcruntime140.dll","vcruntime140_1.dll") {
+            Copy-Item "C:\Windows\System32\$d" "build\windows\x64\runner\Release\" -Force
+          }
+      - name: Smoke test - launch the EXE and wait for the server
+        continue-on-error: true
+        run: |
+          $exe = "build\windows\x64\runner\Release\my_multi_functional_scanner.exe"
+          $p = Start-Process -FilePath $exe -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 40; $i++) {
+            Start-Sleep -Seconds 1
+            try {
+              $r = Invoke-WebRequest "http://localhost:3000/" -UseBasicParsing -TimeoutSec 2
+              if ($r.StatusCode -eq 200) { $ok = $true; break }
+            } catch {}
+          }
+          if ($p.HasExited) { Write-Host "APP EXITED EARLY, exit code: $($p.ExitCode)" }
+          if ($ok) { Write-Host "SERVER IS UP on http://localhost:3000" } else { Write-Host "SERVER DID NOT START" }
+          curl.exe -k -s -o NUL -w "HTTPS check on 3443: %{http_code}`n" https://localhost:3443/
+          Get-Process -Name node, my_multi_functional_scanner -ErrorAction SilentlyContinue | Stop-Process -Force
+          if (-not $ok) { exit 1 }
       - name: Build installer (Inno Setup)
         run: |
           choco install innosetup -y --no-progress
