@@ -32,7 +32,7 @@ jobs:
             [ -f "$f" ] && sed -i 's/flutter\.minSdkVersion/24/' "$f" || true
           done
       - run: flutter pub get
-      - run: flutter build apk --release
+      - run: flutter build apk --release --no-shrink
       - uses: actions/upload-artifact@v4
         with:
           name: android-apk
@@ -51,7 +51,10 @@ jobs:
           cache: true
       - run: flutter create --platforms=windows --project-name my_multi_functional_scanner .
       - run: flutter pub get
-      - run: flutter build windows --release
+      - name: Build Windows release
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        run: flutter build windows --release
       - name: Build installer (Inno Setup)
         run: |
           choco install innosetup -y --no-progress
