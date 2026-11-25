@@ -152,6 +152,8 @@ export type DesktopView =
 
 export type MobileView =
   | 'dashboard'
+  | 'tools'
+  | 'me'
   | 'quick-capture'
   | 'auto-capture'
   | 'doc-scan'

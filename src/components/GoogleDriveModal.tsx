@@ -116,7 +116,7 @@ export function GoogleDriveModal({
       const authRes = await apiFirebaseAuth(idToken);
       await syncFirebaseProfileToFirestore(firebaseUser, 'google', authRes.user.phone);
       onAuthenticated(authRes.token, authRes.user);
-      setStatusMsg('Google Drive connected! Folder "My Multi Functional Scanner" is ready.');
+      setStatusMsg('Google Drive connected! Folder "Oklivo Scanner" is ready.');
       await loadFiles(accessToken);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not connect Google Drive.');
@@ -153,7 +153,7 @@ export function GoogleDriveModal({
         customFolders,
       });
       setFiles(result.files);
-      const msg = `Saved ${result.uploadedCount} document(s) and app settings manifest to Google Drive folder "My Multi Functional Scanner".`;
+      const msg = `Saved ${result.uploadedCount} document(s) and app settings manifest to Google Drive folder "Oklivo Scanner".`;
       setStatusMsg(msg);
       onNotify('Google Drive Backup Complete', msg);
     } catch (err) {
@@ -232,7 +232,7 @@ export function GoogleDriveModal({
                 Google Drive Backup & Sync
               </div>
               <div className="text-[11px] text-emerald-300 truncate">
-                Folder: My Multi Functional Scanner · {documents.length} local file(s)
+                Folder: Oklivo Scanner · {documents.length} local file(s)
               </div>
             </div>
           </div>
@@ -256,7 +256,7 @@ export function GoogleDriveModal({
                   Connect Your Google Drive
                 </div>
                 <p className="text-xs text-slate-600 max-w-md">
-                  Approve Google Drive access so the scanner can create the &ldquo;My Multi Functional Scanner&rdquo; folder and upload your scans, PDFs, OCR text, and settings.
+                  Approve Google Drive access so the scanner can create the &ldquo;Oklivo Scanner&rdquo; folder and upload your scans, PDFs, OCR text, and settings.
                 </p>
               </div>
               <button
@@ -366,7 +366,7 @@ export function GoogleDriveModal({
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-xs font-semibold text-slate-800">
                 <FolderOpen className="w-4 h-4 text-emerald-700" />
-                Files in Google Drive (&ldquo;My Multi Functional Scanner&rdquo;)
+                Files in Google Drive (&ldquo;Oklivo Scanner&rdquo;)
               </div>
               {driveToken && (
                 <button

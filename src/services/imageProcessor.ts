@@ -1,4 +1,12 @@
 import type { CornerPoint, DocumentFilterMode } from '../types';
+import {
+  defaultPaperCorners,
+  detectCornersFromRgbaBuffer,
+  OKEN_SCENE_PRESETS,
+  STUDIO_FILTER_PRESETS,
+  type OkenScenePresetId,
+  type StudioFilterPresetId,
+} from './paperCropMath';
 
 export interface ImageAdjustmentParams {
   filterMode: DocumentFilterMode;
@@ -52,83 +60,45 @@ export function loadImageElement(src: string): Promise<HTMLImageElement> {
 }
 
 /**
- * Automatic document edge & corner estimator using luminance contrast + gradient energy.
+ * Fast real-time paper-edge detector operating directly on a small analysis canvas.
+ */
+export function detectLiveFrameCorners(canvas: HTMLCanvasElement): {
+  corners: CornerPoint[];
+  detected: boolean;
+  confidence: number;
+} {
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return { corners: defaultPaperCorners(), detected: false, confidence: 0 };
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w < 16 || h < 16) return { corners: defaultPaperCorners(), detected: false, confidence: 0 };
+  const { data } = ctx.getImageData(0, 0, w, h);
+  return detectCornersFromRgbaBuffer(data, w, h);
+}
+
+/**
+ * Automatic document edge & corner estimator using RGBA connected-component + convex hull + 4-line TLS fit.
  * Returns normalized 0..1 corner coordinates [topLeft, topRight, bottomRight, bottomLeft].
  */
 export async function detectDocumentCorners(src: string): Promise<CornerPoint[]> {
   try {
     const img = await loadImageElement(src);
-    const w = 160;
-    const h = Math.max(80, Math.round((img.height / img.width) * w));
+    const w = 220;
+    const h = Math.max(100, Math.round((img.height / img.width) * w));
     const canvas = document.createElement('canvas');
     canvas.width = w;
     canvas.height = h;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return defaultCorners();
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return defaultPaperCorners();
     ctx.drawImage(img, 0, 0, w, h);
-    const { data } = ctx.getImageData(0, 0, w, h);
-
-    // Compute edge energy + high luminance mask (paper tends to be bright with crisp border gradient)
-    const lum = new Float32Array(w * h);
-    for (let i = 0; i < w * h; i++) {
-      lum[i] = 0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2];
-    }
-
-    // Find bounding box of bright paper vs darker desk, weighted by Sobel border transitions
-    let sum = 0;
-    for (let i = 0; i < lum.length; i++) sum += lum[i];
-    const meanLum = sum / lum.length;
-    const threshold = Math.min(210, Math.max(115, meanLum + 12));
-
-    let tl = { x: 0.9, y: 0.9, score: Infinity };
-    let tr = { x: 0.1, y: 0.9, score: Infinity };
-    let br = { x: 0.1, y: 0.1, score: -Infinity };
-    let bl = { x: 0.9, y: 0.1, score: -Infinity };
-
-    let hits = 0;
-    for (let y = 4; y < h - 4; y++) {
-      for (let x = 4; x < w - 4; x++) {
-        const idx = y * w + x;
-        if (lum[idx] > threshold) {
-          const gx = Math.abs(lum[idx + 1] - lum[idx - 1]);
-          const gy = Math.abs(lum[idx + w] - lum[idx - w]);
-          if (gx + gy > 18) {
-            hits++;
-            const nx = x / w;
-            const ny = y / h;
-            if (nx + ny < tl.score) tl = { x: nx, y: ny, score: nx + ny };
-            if ((1 - nx) + ny < tr.score) tr = { x: nx, y: ny, score: (1 - nx) + ny };
-            if (nx + ny > br.score) br = { x: nx, y: ny, score: nx + ny };
-            if (ny - nx > bl.score) bl = { x: nx, y: ny, score: ny - nx };
-          }
-        }
-      }
-    }
-
-    if (hits < 40) return defaultCorners();
-
-    const area = Math.abs((tr.x - tl.x) * (bl.y - tl.y));
-    if (area < 0.12) return defaultCorners();
-
-    const clamp = (v: number) => Math.max(0.02, Math.min(0.98, v));
-    return [
-      { x: clamp(tl.x), y: clamp(tl.y) },
-      { x: clamp(tr.x), y: clamp(tr.y) },
-      { x: clamp(br.x), y: clamp(br.y) },
-      { x: clamp(bl.x), y: clamp(bl.y) },
-    ];
+    return detectLiveFrameCorners(canvas).corners;
   } catch {
-    return defaultCorners();
+    return defaultPaperCorners();
   }
 }
 
 export function defaultCorners(): CornerPoint[] {
-  return [
-    { x: 0.08, y: 0.08 },
-    { x: 0.92, y: 0.08 },
-    { x: 0.92, y: 0.92 },
-    { x: 0.08, y: 0.92 },
-  ];
+  return defaultPaperCorners();
 }
 
 /**
@@ -192,7 +162,7 @@ export async function warpPerspective(
   const sh = Math.round(img.height * scale);
   srcCanvas.width = sw;
   srcCanvas.height = sh;
-  const sCtx = srcCanvas.getContext('2d');
+  const sCtx = srcCanvas.getContext('2d', { willReadFrequently: true });
   if (!sCtx) throw new Error('Canvas context unavailable');
   sCtx.drawImage(img, 0, 0, sw, sh);
   const srcImgData = sCtx.getImageData(0, 0, sw, sh);
@@ -286,7 +256,7 @@ export async function processImage(
   const canvas = document.createElement('canvas');
   canvas.width = outW;
   canvas.height = outH;
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) throw new Error('Canvas 2D context unavailable');
 
   ctx.save();
@@ -589,7 +559,7 @@ export function analyzeFrameStability(
   status: 'searching' | 'detected' | 'hold-steady' | 'ready';
   currentGray: Float32Array;
 } {
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) {
     return {
       motionScore: 100,
@@ -889,3 +859,200 @@ export async function resizeImageToManualSize(
   };
 }
 
+/**
+ * Applies one of the Oken Multi-Scene presets (Original, Lighten, Auto, HD Clear, B&W, Black).
+ */
+export async function applyOkenScenePreset(
+  src: string,
+  presetId: OkenScenePresetId,
+  options?: {
+    rotation?: 0 | 90 | 180 | 270;
+    maxWidth?: number;
+    quality?: number;
+    format?: 'image/jpeg' | 'image/png' | 'image/webp';
+  }
+): Promise<{
+  dataUrl: string;
+  width: number;
+  height: number;
+  sizeBytes: number;
+  filterMode: DocumentFilterMode;
+}> {
+  const preset = OKEN_SCENE_PRESETS.find((p) => p.id === presetId) ?? OKEN_SCENE_PRESETS[2];
+  const res = await processImage(src, {
+    ...DEFAULT_ADJUSTMENTS,
+    filterMode: preset.filterMode,
+    brightness: preset.brightness,
+    contrast: preset.contrast,
+    saturation: preset.saturation,
+    sharpness: preset.sharpness,
+    shadowRemoval: preset.shadowRemoval,
+    cleanStrength: preset.cleanStrength,
+    denoise: preset.denoise,
+    rotation: options?.rotation ?? 0,
+    maxWidth: options?.maxWidth ?? 1600,
+    quality: options?.quality ?? 0.9,
+    format: options?.format ?? 'image/jpeg',
+  });
+  return { ...res, filterMode: preset.filterMode };
+}
+
+/**
+ * Applies one of the 6 Dark Studio Filter presets (No shadow, Original, Lighten, Magic Color, Grayscale, B&W).
+ */
+export async function applyStudioFilterPreset(
+  src: string,
+  presetId: StudioFilterPresetId,
+  options?: {
+    rotation?: 0 | 90 | 180 | 270;
+    maxWidth?: number;
+    quality?: number;
+    format?: 'image/jpeg' | 'image/png' | 'image/webp';
+  }
+): Promise<{
+  dataUrl: string;
+  width: number;
+  height: number;
+  sizeBytes: number;
+  filterMode: DocumentFilterMode;
+}> {
+  const preset =
+    STUDIO_FILTER_PRESETS.find((p) => p.id === presetId) ?? STUDIO_FILTER_PRESETS[3];
+  const res = await processImage(src, {
+    ...DEFAULT_ADJUSTMENTS,
+    filterMode: preset.filterMode,
+    brightness: preset.brightness,
+    contrast: preset.contrast,
+    saturation: preset.saturation,
+    sharpness: preset.sharpness,
+    shadowRemoval: preset.shadowRemoval,
+    cleanStrength: preset.cleanStrength,
+    denoise: preset.denoise,
+    rotation: options?.rotation ?? 0,
+    maxWidth: options?.maxWidth ?? 1600,
+    quality: options?.quality ?? 0.9,
+    format: options?.format ?? 'image/jpeg',
+  });
+  return { ...res, filterMode: preset.filterMode };
+}
+
+/**
+ * Composes an Oken-style 1:1 A4 preview & export sheet for ID Cards, Driver Licenses, and Passports.
+ */
+export async function composeIdCardA4Sheet(
+  frontSrc: string,
+  backSrc: string | null,
+  template: 'single' | 'license' | 'passport' = 'license',
+  quality = 0.92
+): Promise<{ dataUrl: string; width: number; height: number; sizeBytes: number }> {
+  const a4W = 1240;
+  const a4H = 1754;
+  const canvas = document.createElement('canvas');
+  canvas.width = a4W;
+  canvas.height = a4H;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas context unavailable');
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, a4W, a4H);
+
+  const imgF = await loadImageElement(frontSrc);
+
+  if (template === 'passport') {
+    const targetW = Math.round(a4W * 0.72);
+    const targetH = Math.round(targetW * (imgF.height / Math.max(1, imgF.width)));
+    const x = Math.round((a4W - targetW) / 2);
+    const y = Math.round((a4H - targetH) / 2);
+    ctx.drawImage(imgF, x, y, targetW, targetH);
+  } else if (template === 'single' || !backSrc) {
+    const targetW = Math.round(a4W * 0.66);
+    const targetH = Math.round(targetW * 0.63);
+    const x = Math.round((a4W - targetW) / 2);
+    const y = Math.round(a4H * 0.24);
+    ctx.drawImage(imgF, x, y, targetW, targetH);
+  } else {
+    const imgB = await loadImageElement(backSrc);
+    const cardW = Math.round(a4W * 0.64);
+    const cardH = Math.round(cardW * 0.63);
+    const x = Math.round((a4W - cardW) / 2);
+    const topY = Math.round(a4H * 0.17);
+    const gap = Math.round(a4H * 0.08);
+    ctx.drawImage(imgF, x, topY, cardW, cardH);
+    ctx.drawImage(imgB, x, topY + cardH + gap, cardW, cardH);
+  }
+
+  const dataUrl = canvas.toDataURL('image/jpeg', quality);
+  return {
+    dataUrl,
+    width: a4W,
+    height: a4H,
+    sizeBytes: getDataUrlByteLength(dataUrl),
+  };
+}
+
+/**
+ * Splits a two-page open book capture into Left and Right pages cleanly.
+ */
+export async function splitBookSpread(
+  src: string,
+  quality = 0.92
+): Promise<{ left: string; right: string }> {
+  const img = await loadImageElement(src);
+  const halfW = Math.floor(img.width / 2);
+  const h = img.height;
+
+  const makeHalf = (sx: number, sw: number) => {
+    const c = document.createElement('canvas');
+    c.width = sw;
+    c.height = h;
+    const ctx = c.getContext('2d');
+    if (!ctx) throw new Error('Canvas context unavailable');
+    ctx.drawImage(img, sx, 0, sw, h, 0, 0, sw, h);
+    return c.toDataURL('image/jpeg', quality);
+  };
+
+  return {
+    left: makeHalf(0, halfW),
+    right: makeHalf(halfW, img.width - halfW),
+  };
+}
+
+/**
+ * Stitches one or more page images vertically into a single continuous Long Image for sharing.
+ */
+export async function composeLongImage(
+  imageUrls: string[],
+  quality = 0.9
+): Promise<{ dataUrl: string; width: number; height: number; sizeBytes: number }> {
+  if (imageUrls.length === 0) {
+    throw new Error('No images provided for long image');
+  }
+  const imgs = await Promise.all(imageUrls.map((u) => loadImageElement(u)));
+  const targetW = Math.min(1400, Math.max(...imgs.map((i) => i.width)));
+  const gap = 24;
+  const scaledHeights = imgs.map((i) => Math.max(100, Math.round((i.height / i.width) * targetW)));
+  const totalH = scaledHeights.reduce((a, b) => a + b, 0) + gap * (imgs.length - 1);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = targetW;
+  canvas.height = totalH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas context unavailable');
+
+  ctx.fillStyle = '#f1f5f9';
+  ctx.fillRect(0, 0, targetW, totalH);
+
+  let y = 0;
+  for (let i = 0; i < imgs.length; i++) {
+    ctx.drawImage(imgs[i], 0, y, targetW, scaledHeights[i]);
+    y += scaledHeights[i] + gap;
+  }
+
+  const dataUrl = canvas.toDataURL('image/jpeg', quality);
+  return {
+    dataUrl,
+    width: targetW,
+    height: totalH,
+    sizeBytes: getDataUrlByteLength(dataUrl),
+  };
+}

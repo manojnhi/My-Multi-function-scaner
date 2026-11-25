@@ -1,9 +1,11 @@
 import {
+  ArrowLeft,
   ChevronLeft,
   ChevronRight,
   Download,
   FileText,
   Languages,
+  Layers,
   Maximize2,
   Printer,
   Share2,
@@ -23,6 +25,8 @@ interface DocumentPreviewModalProps {
   onEditImage: (doc: ScanDocument) => void;
   onOpenOcr: (doc: ScanDocument) => void;
   onShareDoc?: (doc: ScanDocument) => void;
+  onDownloadDoc?: (doc: ScanDocument) => void;
+  onOpenDocPages?: (doc: ScanDocument) => void;
 }
 
 export function DocumentPreviewModal({
@@ -31,6 +35,8 @@ export function DocumentPreviewModal({
   onEditImage,
   onOpenOcr,
   onShareDoc,
+  onDownloadDoc,
+  onOpenDocPages,
 }: DocumentPreviewModalProps) {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -61,7 +67,20 @@ export function DocumentPreviewModal({
     };
   }, [doc.dataUrl, isPdf]);
 
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
   const activeSrc = isPdf ? pdfPages[pageIdx] || '' : doc.dataUrl;
+
+  const resetView = () => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  };
 
   const handlePrint = () => {
     const iframe = document.createElement('iframe');
@@ -106,229 +125,235 @@ export function DocumentPreviewModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-3 md:p-6"
+      className="fixed inset-0 z-50 bg-[#0b0e14] text-white flex flex-col overflow-hidden"
       role="dialog"
       aria-modal="true"
       aria-label="Document Preview"
     >
-      <div className="w-full max-w-6xl h-[90vh] bg-white rounded-2xl border border-slate-200 flex flex-col overflow-hidden">
-        {/* Top Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3 border-b border-slate-200">
+      {/* Minimal Modern Studio Header */}
+      <header className="h-14 shrink-0 px-3 sm:px-5 bg-[#121721]/95 backdrop-blur-md border-b border-white/10 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <button
+            type="button"
+            onClick={onClose}
+            className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl text-slate-300 hover:text-white hover:bg-white/10 transition-colors shrink-0"
+            aria-label="Back"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
           <div className="min-w-0">
-            <h2 className="text-base font-semibold text-slate-900 truncate">{doc.title}</h2>
-            <p className="text-xs text-slate-500 tabular-nums truncate">
-              {doc.fileName} · {formatBytes(doc.sizeBytes)} · {doc.pageCount} page
-              {doc.pageCount > 1 ? 's' : ''} · {doc.folder}
+            <h2 className="text-sm sm:text-base font-display font-semibold text-white truncate">
+              {doc.title}
+            </h2>
+            <p className="text-[11px] text-slate-400 tabular-nums truncate">
+              {formatBytes(doc.sizeBytes)} · {doc.pageCount} {doc.pageCount > 1 ? 'pages' : 'page'}
             </p>
           </div>
+        </div>
 
-          <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0">
+          <div className="flex items-center bg-white/5 border border-white/10 rounded-xl p-0.5">
             <button
               type="button"
-              onClick={() => setZoom((z) => Math.max(0.5, Number((z - 0.25).toFixed(2))))}
-              className="p-2 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700"
+              onClick={() => {
+                const next = Math.max(0.5, Number((zoom - 0.25).toFixed(2)));
+                setZoom(next);
+                if (next <= 1) setPan({ x: 0, y: 0 });
+              }}
+              className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg hover:bg-white/10 text-slate-200 transition-colors"
               aria-label="Zoom out"
             >
               <ZoomOut className="w-4 h-4" />
             </button>
-            <span className="text-xs font-mono tabular-nums px-1.5 text-slate-700 min-w-[46px] text-center">
+            <span className="text-xs font-mono tabular-nums px-2 text-slate-200 min-w-[46px] text-center select-none">
               {Math.round(zoom * 100)}%
             </span>
             <button
               type="button"
               onClick={() => setZoom((z) => Math.min(4, Number((z + 0.25).toFixed(2))))}
-              className="p-2 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700"
+              className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg hover:bg-white/10 text-slate-200 transition-colors"
               aria-label="Zoom in"
             >
               <ZoomIn className="w-4 h-4" />
             </button>
             <button
               type="button"
-              onClick={() => {
-                setZoom(1);
-                setPan({ x: 0, y: 0 });
-              }}
-              className="p-2 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700"
-              title="Reset zoom and pan"
+              onClick={resetView}
+              className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg hover:bg-white/10 text-slate-200 transition-colors"
+              title="Fit to screen"
               aria-label="Reset zoom"
             >
-              <Maximize2 className="w-4 h-4" />
+              <Maximize2 className="w-3.5 h-3.5" />
             </button>
+          </div>
 
-            {!isPdf && (
-              <button
-                type="button"
-                onClick={() => {
-                  onClose();
-                  onEditImage(doc);
-                }}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-700"
-              >
-                <SlidersHorizontal className="w-3.5 h-3.5" />
-                Edit
-              </button>
-            )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="hidden sm:flex min-h-[38px] min-w-[38px] items-center justify-center rounded-xl text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
+            aria-label="Close preview"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </header>
 
+      {/* Full-Size Document Stage */}
+      <div
+        onWheel={(e) => {
+          e.preventDefault();
+          const next = Math.min(4, Math.max(0.5, Number((zoom + (e.deltaY < 0 ? 0.15 : -0.15)).toFixed(2))));
+          setZoom(next);
+          if (next <= 1) setPan({ x: 0, y: 0 });
+        }}
+        onDoubleClick={() => {
+          if (zoom > 1) {
+            resetView();
+          } else {
+            setZoom(2);
+          }
+        }}
+        onPointerDown={(e) => {
+          if (zoom <= 1) return;
+          setDragOrigin({ x: e.clientX, y: e.clientY, px: pan.x, py: pan.y });
+        }}
+        onPointerMove={(e) => {
+          if (!dragOrigin) return;
+          setPan({
+            x: dragOrigin.px + (e.clientX - dragOrigin.x),
+            y: dragOrigin.py + (e.clientY - dragOrigin.y),
+          });
+        }}
+        onPointerUp={() => setDragOrigin(null)}
+        onPointerLeave={() => setDragOrigin(null)}
+        className={`relative flex-1 min-h-0 w-full overflow-hidden flex items-center justify-center p-2 sm:p-6 select-none touch-none ${
+          zoom > 1 ? 'cursor-grab active:cursor-grabbing' : 'cursor-zoom-in'
+        }`}
+      >
+        {loadingPdf ? (
+          <div className="text-sm text-slate-300">Rendering PDF pages...</div>
+        ) : activeSrc ? (
+          <img
+            src={activeSrc}
+            alt={doc.title}
+            draggable={false}
+            style={{
+              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+              transformOrigin: 'center center',
+            }}
+            className="w-full h-full object-contain rounded-lg drop-shadow-[0_20px_50px_rgba(0,0,0,0.65)] transition-transform duration-100"
+          />
+        ) : (
+          <div className="text-center text-slate-300 space-y-2">
+            <FileText className="w-12 h-12 mx-auto text-emerald-400" />
+            <p className="text-sm">Preview ready for download</p>
+          </div>
+        )}
+
+        {isPdf && pdfPages.length > 1 && (
+          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-[#151b26]/90 backdrop-blur-md border border-white/10 px-3.5 py-1.5 rounded-xl text-xs text-white shadow-lg">
+            <button
+              type="button"
+              onClick={() => setPageIdx((i) => Math.max(0, i - 1))}
+              disabled={pageIdx === 0}
+              className="p-1 disabled:opacity-40 hover:text-emerald-400"
+              aria-label="Previous page"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <span className="font-mono tabular-nums">
+              {pageIdx + 1} / {pdfPages.length}
+            </span>
+            <button
+              type="button"
+              onClick={() => setPageIdx((i) => Math.min(pdfPages.length - 1, i + 1))}
+              disabled={pageIdx === pdfPages.length - 1}
+              className="p-1 disabled:opacity-40 hover:text-emerald-400"
+              aria-label="Next page"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Sleek Professional Action Dock */}
+      <footer className="shrink-0 bg-[#121721]/95 backdrop-blur-md border-t border-white/10 px-2 sm:px-6 py-2">
+        <div className="max-w-3xl mx-auto flex flex-wrap items-center justify-center gap-1.5 sm:gap-2">
+          {onOpenDocPages && (
             <button
               type="button"
               onClick={() => {
                 onClose();
-                onOpenOcr(doc);
+                onOpenDocPages(doc);
               }}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-700"
+              className="flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 min-h-[44px] px-2.5 sm:px-3.5 py-1.5 sm:py-2 text-[10px] sm:text-xs font-medium rounded-xl bg-white/5 hover:bg-white/12 border border-white/10 text-slate-100 whitespace-nowrap transition-colors"
             >
-              <Languages className="w-3.5 h-3.5" />
-              OCR Text
+              <Layers className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>Pages</span>
             </button>
-
-            {onShareDoc && (
-              <button
-                type="button"
-                onClick={() => onShareDoc(doc)}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 rounded-lg text-emerald-900"
-              >
-                <Share2 className="w-3.5 h-3.5" />
-                Share
-              </button>
-            )}
-
+          )}
+          {!isPdf && (
             <button
               type="button"
-              onClick={handlePrint}
-              className="p-2 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700"
-              aria-label="Print document"
+              onClick={() => {
+                onClose();
+                onEditImage(doc);
+              }}
+              className="flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 min-h-[44px] px-2.5 sm:px-3.5 py-1.5 sm:py-2 text-[10px] sm:text-xs font-medium rounded-xl bg-white/5 hover:bg-white/12 border border-white/10 text-slate-100 whitespace-nowrap transition-colors"
             >
-              <Printer className="w-4 h-4" />
+              <SlidersHorizontal className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>Edit</span>
             </button>
+          )}
 
-            <button
-              type="button"
-              onClick={() => downloadDataUrl(doc.dataUrl, doc.fileName)}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-emerald-800 hover:bg-emerald-900 text-white rounded-lg"
-            >
-              <Download className="w-3.5 h-3.5" />
-              Download
-            </button>
-
-            <button
-              type="button"
-              onClick={onClose}
-              className="p-2 rounded-lg hover:bg-slate-100 text-slate-500 hover:text-slate-900"
-              aria-label="Close preview"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-
-        {/* Viewport */}
-        <div className="flex-1 flex flex-col lg:flex-row min-h-0">
-          <div
-            onWheel={(e) => {
-              e.preventDefault();
-              setZoom((z) =>
-                Math.min(4, Math.max(0.5, Number((z + (e.deltaY < 0 ? 0.15 : -0.15)).toFixed(2))))
-              );
+          <button
+            type="button"
+            onClick={() => {
+              onClose();
+              onOpenOcr(doc);
             }}
-            onPointerDown={(e) => {
-              if (zoom <= 1) return;
-              setDragOrigin({ x: e.clientX, y: e.clientY, px: pan.x, py: pan.y });
-            }}
-            onPointerMove={(e) => {
-              if (!dragOrigin) return;
-              setPan({
-                x: dragOrigin.px + (e.clientX - dragOrigin.x),
-                y: dragOrigin.py + (e.clientY - dragOrigin.y),
-              });
-            }}
-            onPointerUp={() => setDragOrigin(null)}
-            onPointerLeave={() => setDragOrigin(null)}
-            className={`flex-1 bg-slate-900 overflow-hidden flex flex-col items-center justify-center p-6 select-none ${
-              zoom > 1 ? 'cursor-grab active:cursor-grabbing' : ''
-            }`}
+            className="flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 min-h-[44px] px-1.5 sm:px-3.5 py-1.5 sm:py-2 text-[10px] sm:text-xs font-medium rounded-xl bg-white/5 hover:bg-white/12 border border-white/10 text-slate-100 whitespace-nowrap transition-colors"
           >
-            {loadingPdf ? (
-              <div className="text-sm text-slate-300">Rendering PDF pages...</div>
-            ) : activeSrc ? (
-              <img
-                src={activeSrc}
-                alt={doc.title}
-                draggable={false}
-                style={{
-                  transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-                  transformOrigin: 'center center',
-                }}
-                className="max-h-[72vh] w-auto object-contain rounded shadow-xl transition-transform duration-75"
-              />
-            ) : (
-              <div className="text-center text-slate-300 space-y-2">
-                <FileText className="w-10 h-10 mx-auto text-emerald-400" />
-                <p className="text-sm">Preview ready for download ({doc.fileName})</p>
-              </div>
-            )}
+            <Languages className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span className="sm:hidden">OCR</span>
+            <span className="hidden sm:inline">OCR Text</span>
+          </button>
 
-            {isPdf && pdfPages.length > 1 && (
-              <div className="mt-4 flex items-center gap-3 bg-slate-800 px-3.5 py-1.5 rounded-lg text-xs text-white relative z-10">
-                <button
-                  type="button"
-                  onClick={() => setPageIdx((i) => Math.max(0, i - 1))}
-                  disabled={pageIdx === 0}
-                  className="p-1 disabled:opacity-40"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
-                <span className="font-mono tabular-nums">
-                  Page {pageIdx + 1} / {pdfPages.length}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setPageIdx((i) => Math.min(pdfPages.length - 1, i + 1))}
-                  disabled={pageIdx === pdfPages.length - 1}
-                  className="p-1 disabled:opacity-40"
-                >
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
-            )}
-          </div>
+          {onShareDoc && (
+            <button
+              type="button"
+              onClick={() => onShareDoc(doc)}
+              className="flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 min-h-[44px] px-1.5 sm:px-3.5 py-1.5 sm:py-2 text-[10px] sm:text-xs font-medium rounded-xl bg-white/5 hover:bg-white/12 border border-white/10 text-slate-100 whitespace-nowrap transition-colors"
+            >
+              <Share2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>Share</span>
+            </button>
+          )}
 
-          {/* Extracted OCR Side Panel */}
-          <aside className="w-full lg:w-80 border-t lg:border-t-0 lg:border-l border-slate-200 bg-slate-50 p-4 overflow-y-auto shrink-0">
-            <div className="text-xs font-semibold text-slate-800 mb-2">Metadata & Indexed Text</div>
-            <dl className="text-xs space-y-1.5 text-slate-600 pb-4 border-b border-slate-200">
-              <div className="flex justify-between">
-                <dt>Source</dt>
-                <dd className="font-medium text-slate-900">{doc.sourceDevice}</dd>
-              </div>
-              <div className="flex justify-between">
-                <dt>Format</dt>
-                <dd className="font-mono text-slate-900">{doc.fileExtension.toUpperCase()}</dd>
-              </div>
-              <div className="flex justify-between">
-                <dt>Version</dt>
-                <dd className="font-mono tabular-nums text-slate-900">v{doc.version}</dd>
-              </div>
-              <div className="flex justify-between">
-                <dt>Sync State</dt>
-                <dd className="font-medium text-emerald-800 capitalize">{doc.syncStatus}</dd>
-              </div>
-            </dl>
-            <div className="mt-4">
-              <div className="text-xs font-semibold text-slate-800 mb-1.5">OCR Text</div>
-              {doc.ocrText ? (
-                <pre className="text-xs text-slate-700 whitespace-pre-wrap font-sans leading-relaxed bg-white p-3 rounded-xl border border-slate-200">
-                  {doc.ocrText}
-                </pre>
-              ) : (
-                <p className="text-xs text-slate-500">
-                  No OCR text extracted yet. Click OCR Text above to scan English or Hindi text.
-                </p>
-              )}
-            </div>
-          </aside>
+          <button
+            type="button"
+            onClick={handlePrint}
+            className="flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 min-h-[44px] px-1.5 sm:px-3.5 py-1.5 sm:py-2 text-[10px] sm:text-xs font-medium rounded-xl bg-white/5 hover:bg-white/12 border border-white/10 text-slate-100 whitespace-nowrap transition-colors"
+            aria-label="Print document"
+          >
+            <Printer className="w-4 h-4 text-slate-300 shrink-0" />
+            <span>Print</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() =>
+              onDownloadDoc ? onDownloadDoc(doc) : downloadDataUrl(doc.dataUrl, doc.fileName)
+            }
+            className="flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 min-h-[44px] px-1.5 sm:px-4 py-1.5 sm:py-2 text-[10px] sm:text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl whitespace-nowrap transition-colors shadow-sm"
+          >
+            <Download className="w-4 h-4 shrink-0" />
+            <span className="sm:hidden">Save</span>
+            <span className="hidden sm:inline">Download</span>
+          </button>
         </div>
-      </div>
+      </footer>
     </div>
   );
 }
-

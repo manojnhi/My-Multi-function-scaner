@@ -26,13 +26,13 @@ export function BrandLogo({ size = 32, className = '' }: BrandLogoProps) {
 
   return (
     <img
-      src="/assets/aistudio/file_00000000893482119598e34c909866a1_54a92453.png"
-      alt="My Multi Functional Scanner logo"
+      src="/logo.png"
+      alt="Oklivo Scanner logo"
       width={size}
       height={size}
       onError={() => setFailed(true)}
       style={{ width: size, height: size }}
-      className={`rounded-xl object-contain shrink-0 ${className}`}
+      className={`object-contain shrink-0 ${className}`}
     />
   );
 }

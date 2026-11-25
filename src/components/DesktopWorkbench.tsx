@@ -4,6 +4,7 @@ import {
   Cloud,
   CloudUpload,
   Crop,
+  Download,
   Eye,
   FileCode2,
   FileText,
@@ -14,6 +15,7 @@ import {
   Image as ImageIcon,
   Languages,
   Laptop,
+  Layers,
   LayoutDashboard,
   List,
   LogIn,
@@ -34,7 +36,7 @@ import {
 } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 import { DEFAULT_FOLDERS, formatBytes } from '../services/db';
-import { downloadDataUrl, imagesToPdf } from '../services/pdfService';
+import { imagesToPdf } from '../services/pdfService';
 import type {
   ActivityNotification,
   DesktopView,
@@ -67,9 +69,11 @@ interface DesktopWorkbenchProps {
   onOpenAuth: () => void;
   onOpenLoginPanel: () => void;
   onPreviewDoc: (doc: ScanDocument) => void;
+  onOpenDocPages: (doc: ScanDocument) => void;
   onEditDoc: (doc: ScanDocument, tab?: EditorStudioTab) => void;
   onOpenOcr: (doc: ScanDocument) => void;
   onShareDoc: (doc: ScanDocument) => void;
+  onDownloadDoc: (doc: ScanDocument) => void;
   onBatchOcr: (docIds: string[]) => Promise<void>;
   batchOcrRunning: boolean;
   onMarkNotificationsRead: () => void;
@@ -111,9 +115,11 @@ export function DesktopWorkbench({
   onOpenAuth,
   onOpenLoginPanel,
   onPreviewDoc,
+  onOpenDocPages,
   onEditDoc,
   onOpenOcr,
   onShareDoc,
+  onDownloadDoc,
   onBatchOcr,
   batchOcrRunning,
   onMarkNotificationsRead,
@@ -263,9 +269,9 @@ export function DesktopWorkbench({
           <BrandLogo size={42} />
           <div className="min-w-0">
             <div className="text-sm font-display font-bold text-white leading-tight truncate">
-              My Multi Functional
+              Oklivo Scanner
             </div>
-            <div className="text-xs text-emerald-300/90 font-medium">Scanner Desktop</div>
+            <div className="text-xs text-emerald-300/90 font-medium">Desktop Studio</div>
           </div>
         </div>
 
@@ -483,40 +489,6 @@ export function DesktopWorkbench({
           {/* DASHBOARD VIEW */}
           {view === 'dashboard' && (
             <div className="space-y-6">
-              {/* KPI Strip */}
-              <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-                <div className="bg-white border border-slate-200 rounded-2xl p-4">
-                  <div className="text-xs text-slate-500">Total Documents</div>
-                  <div className="text-2xl font-display font-bold text-slate-900 mt-1 tabular-nums">
-                    {documents.length}
-                  </div>
-                </div>
-                <div className="bg-white border border-slate-200 rounded-2xl p-4">
-                  <div className="text-xs text-slate-500">Images</div>
-                  <div className="text-2xl font-display font-bold text-slate-900 mt-1 tabular-nums">
-                    {stats.imgCount}
-                  </div>
-                </div>
-                <div className="bg-white border border-slate-200 rounded-2xl p-4">
-                  <div className="text-xs text-slate-500">PDF Files</div>
-                  <div className="text-2xl font-display font-bold text-slate-900 mt-1 tabular-nums">
-                    {stats.pdfCount}
-                  </div>
-                </div>
-                <div className="bg-white border border-slate-200 rounded-2xl p-4">
-                  <div className="text-xs text-slate-500">Local Storage</div>
-                  <div className="text-2xl font-display font-bold text-slate-900 mt-1 tabular-nums">
-                    {formatBytes(stats.totalBytes)}
-                  </div>
-                </div>
-                <div className="bg-white border border-slate-200 rounded-2xl p-4 col-span-2 lg:col-span-1">
-                  <div className="text-xs text-slate-500">Paired Mobiles</div>
-                  <div className="text-2xl font-display font-bold text-emerald-800 mt-1 tabular-nums">
-                    {stats.connectedDevices} / {devices.length}
-                  </div>
-                </div>
-              </div>
-
               {/* Action Row */}
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="lg:col-span-2 bg-white border border-slate-200 rounded-2xl p-5 space-y-4">
@@ -594,6 +566,14 @@ export function DesktopWorkbench({
                           </button>
 
                           <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => onOpenDocPages(doc)}
+                              className="p-2 text-slate-500 hover:text-emerald-800 rounded-lg hover:bg-slate-100"
+                              title="Pages & Scan Filters"
+                            >
+                              <Layers className="w-4 h-4" />
+                            </button>
                             {doc.mimeType.startsWith('image/') && (
                               <>
                                 <button
@@ -632,10 +612,10 @@ export function DesktopWorkbench({
                             </button>
                             <button
                               type="button"
-                              onClick={() => downloadDataUrl(doc.dataUrl, doc.fileName)}
+                              onClick={() => onDownloadDoc(doc)}
                               className="px-2.5 py-1.5 text-xs font-medium border border-slate-200 rounded-lg hover:bg-slate-50"
                             >
-                              Export
+                              Download
                             </button>
                           </div>
                         </div>
@@ -885,6 +865,14 @@ export function DesktopWorkbench({
                               >
                                 <Eye className="w-3.5 h-3.5" />
                               </button>
+                              <button
+                                type="button"
+                                onClick={() => onOpenDocPages(doc)}
+                                className="p-1.5 text-slate-500 hover:text-emerald-800 rounded-lg hover:bg-slate-100"
+                                title="Pages & Filters"
+                              >
+                                <Layers className="w-3.5 h-3.5" />
+                              </button>
                               {doc.mimeType.startsWith('image/') && (
                                 <>
                                   <button
@@ -920,6 +908,14 @@ export function DesktopWorkbench({
                                 title="Share Across Platforms"
                               >
                                 <Share2 className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => onDownloadDoc(doc)}
+                                className="p-1.5 text-slate-500 hover:text-emerald-800 rounded-lg hover:bg-slate-100"
+                                title="Download (Choose Format)"
+                              >
+                                <Download className="w-3.5 h-3.5" />
                               </button>
                               <button
                                 type="button"
@@ -1016,10 +1012,10 @@ export function DesktopWorkbench({
                             </button>
                             <button
                               type="button"
-                              onClick={() => downloadDataUrl(doc.dataUrl, doc.fileName)}
+                              onClick={() => onDownloadDoc(doc)}
                               className="text-slate-700 hover:underline"
                             >
-                              Export
+                              Download
                             </button>
                           </td>
                         </tr>
@@ -1210,7 +1206,7 @@ export function DesktopWorkbench({
                       <span className="font-semibold text-slate-900">Google Drive Backup</span>
                       <div className="text-[11px] text-slate-500">
                         {driveConnected
-                          ? 'Connected to My Multi Functional Scanner folder'
+                          ? 'Connected to Oklivo Scanner folder'
                           : 'Back up all scans, PDFs, and settings to Google Drive'}
                       </div>
                     </div>
@@ -1352,7 +1348,7 @@ export function DesktopWorkbench({
                 <BrandLogo size={56} />
                 <div className="min-w-0">
                   <div className="text-sm font-display font-bold text-slate-900">
-                    My Multi Functional Scanner
+                    Oklivo Scanner
                   </div>
                   <div className="text-xs text-slate-500 mt-0.5">
                     Multifunctional Document & Image Scanning Ecosystem · Offline IndexedDB · LAN WebSocket Sync · Hindi & English OCR

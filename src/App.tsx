@@ -3,7 +3,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AuthModal } from './components/AuthModal';
 import { BrandLogo } from './components/BrandLogo';
 import { DesktopWorkbench } from './components/DesktopWorkbench';
+import { DocumentPagesModal } from './components/DocumentPagesModal';
 import { DocumentPreviewModal } from './components/DocumentPreviewModal';
+import { DownloadFormatModal } from './components/DownloadFormatModal';
 import { ImageEditorModal, type EditorStudioTab } from './components/ImageEditorModal';
 import { LoginPanel } from './components/LoginPanel';
 import { MobileCompanion } from './components/MobileCompanion';
@@ -114,13 +116,20 @@ export default function App() {
 
   // Active Modals
   const [previewDoc, setPreviewDoc] = useState<ScanDocument | null>(null);
+  const [docPagesTargetId, setDocPagesTargetId] = useState<string | null>(null);
   const [editingDoc, setEditingDoc] = useState<ScanDocument | null>(null);
   const [editorInitialTab, setEditorInitialTab] = useState<EditorStudioTab>('clean');
   const [ocrDoc, setOcrDoc] = useState<ScanDocument | null>(null);
   const [shareDoc, setShareDoc] = useState<ScanDocument | null>(null);
+  const [downloadDoc, setDownloadDoc] = useState<ScanDocument | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showDriveModal, setShowDriveModal] = useState(false);
   const [toastMsg, setToastMsg] = useState('');
+
+  const docPagesTarget = useMemo(
+    () => (docPagesTargetId ? documents.find((d) => d.id === docPagesTargetId) || null : null),
+    [docPagesTargetId, documents]
+  );
 
   const handleOpenEditor = useCallback((doc: ScanDocument, tab: EditorStudioTab = 'clean') => {
     setEditorInitialTab(tab);
@@ -750,7 +759,7 @@ export default function App() {
       <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center gap-3">
         <BrandLogo size={72} />
         <div className="text-sm font-display font-bold text-emerald-950">
-          My Multi Functional Scanner
+          Oklivo Scanner
         </div>
         <div className="text-xs text-slate-500">Initializing offline storage & scanner engine...</div>
       </div>
@@ -794,9 +803,11 @@ export default function App() {
           onOpenAuth={() => setShowAuthModal(true)}
           onOpenLoginPanel={() => setShowLoginPanel(true)}
           onPreviewDoc={setPreviewDoc}
+          onOpenDocPages={(d) => setDocPagesTargetId(d.id)}
           onEditDoc={handleOpenEditor}
           onOpenOcr={setOcrDoc}
           onShareDoc={setShareDoc}
+          onDownloadDoc={setDownloadDoc}
           onBatchOcr={handleBatchOcr}
           batchOcrRunning={batchOcrRunning}
           onMarkNotificationsRead={handleMarkNotificationsRead}
@@ -832,10 +843,13 @@ export default function App() {
           onOpenAuth={() => setShowAuthModal(true)}
           onOpenLoginPanel={() => setShowLoginPanel(true)}
           onSaveDocument={handleSaveDocument}
+          onDeleteDocument={handleDeleteDocument}
+          onOpenDocPages={(d) => setDocPagesTargetId(d.id)}
           onPreviewDoc={setPreviewDoc}
           onEditDoc={handleOpenEditor}
           onOpenOcr={setOcrDoc}
           onShareDoc={setShareDoc}
+          onDownloadDoc={setDownloadDoc}
           onUpdateSettings={handleUpdateSettings}
           onRetryTransfer={handleRetryTransfer}
           driveConnected={Boolean(driveToken)}
@@ -844,13 +858,36 @@ export default function App() {
       )}
 
       {/* Modals */}
+      {docPagesTarget && (
+        <DocumentPagesModal
+          document={docPagesTarget}
+          onClose={() => setDocPagesTargetId(null)}
+          onUpdateDocument={handleUpdateDocument}
+          onDeleteDocument={handleDeleteDocument}
+          onShareDoc={setShareDoc}
+          onDownloadDoc={setDownloadDoc}
+          onOpenOcr={setOcrDoc}
+          onOpenPreview={setPreviewDoc}
+          onOpenImageEditor={handleOpenEditor}
+          onSaveNewCollage={async (params) => {
+            await handleSaveDocument({
+              ...params,
+              category: 'Scans',
+            });
+            showToast(`Saved collage "${params.title}"`);
+          }}
+        />
+      )}
+
       {previewDoc && (
         <DocumentPreviewModal
           document={previewDoc}
           onClose={() => setPreviewDoc(null)}
+          onOpenDocPages={(d) => setDocPagesTargetId(d.id)}
           onEditImage={(d) => handleOpenEditor(d, 'clean')}
           onOpenOcr={setOcrDoc}
           onShareDoc={setShareDoc}
+          onDownloadDoc={setDownloadDoc}
         />
       )}
 
@@ -877,6 +914,7 @@ export default function App() {
           pairCode={pairCode}
           wsConnected={wsConnected}
           isOffline={isOffline}
+          onDownloadDoc={setDownloadDoc}
           onSendViaLan={
             workspaceMode === 'mobile' && socketRef.current && wsConnected
               ? (targetDoc) => {
@@ -885,6 +923,14 @@ export default function App() {
               : undefined
           }
           onClose={() => setShareDoc(null)}
+        />
+      )}
+
+      {downloadDoc && (
+        <DownloadFormatModal
+          document={downloadDoc}
+          onClose={() => setDownloadDoc(null)}
+          onDownloaded={(msg) => showToast(msg)}
         />
       )}
 

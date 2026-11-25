@@ -8,7 +8,7 @@ import { computeSha256 } from './db';
 
 const DRIVE_FILES_API = 'https://www.googleapis.com/drive/v3/files';
 const DRIVE_UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3/files';
-const SCANNER_FOLDER_NAME = 'My Multi Functional Scanner';
+const SCANNER_FOLDER_NAME = 'Oklivo Scanner';
 const MANIFEST_FILE_NAME = 'scanner_backup_manifest.json';
 
 function driveHeaders(accessToken: string, extra?: Record<string, string>): HeadersInit {
@@ -60,7 +60,7 @@ export async function ensureScannerDriveFolder(accessToken: string): Promise<str
     body: JSON.stringify({
       name: SCANNER_FOLDER_NAME,
       mimeType: 'application/vnd.google-apps.folder',
-      description: 'Automatic backup folder for My Multi Functional Scanner documents & PDFs.',
+      description: 'Automatic backup folder for Oklivo Scanner documents & PDFs.',
     }),
   });
   if (!createRes.ok) {
@@ -177,7 +177,7 @@ export async function uploadDocumentToDrive(
   const blob = await dataUrlToBlob(doc.dataUrl, doc.mimeType);
   const metadata: Record<string, unknown> = {
     name: doc.fileName,
-    description: `${doc.title} (${doc.category}) · My Multi Functional Scanner`,
+    description: `${doc.title} (${doc.category}) · Oklivo Scanner`,
     appProperties: {
       scannerDocId: doc.id,
       category: doc.category,
@@ -215,7 +215,7 @@ export async function syncAllToGoogleDrive(params: {
 
   // Upload complete metadata manifest (settings, folders, OCR text)
   const manifestPayload = {
-    app: 'My Multi Functional Scanner',
+    app: 'Oklivo Scanner',
     exportedAt: new Date().toISOString(),
     customFolders,
     settings: { ...settings, appLockPinHash: undefined },

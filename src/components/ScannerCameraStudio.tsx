@@ -1,37 +1,69 @@
 import {
   ArrowLeft,
   ArrowRight,
-  Camera,
   CheckCircle2,
-  CreditCard,
-  FilePlus2,
-  FlipHorizontal2,
-  FolderOpen,
+  FileInput,
   Grid3X3,
+  Image as ImageIcon,
   Layers,
   Plus,
-  RotateCcw,
-  ScanLine,
-  Timer,
+  Settings,
   Trash2,
-  Upload,
   Wifi,
+  X,
   Zap,
-  ZoomIn,
-  ZoomOut,
+  ZapOff,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getSavedWifiCameras, saveWifiCameras } from '../services/db';
 import {
   analyzeFrameStability,
-  DEFAULT_ADJUSTMENTS,
-  processImage,
+  applyOkenScenePreset,
+  composeIdCardA4Sheet,
+  detectDocumentCorners,
+  detectLiveFrameCorners,
+  splitBookSpread,
+  warpPerspective,
 } from '../services/imageProcessor';
+import { runOcrExtraction } from '../services/ocrService';
+import {
+  defaultPaperCorners,
+  OKEN_SCENE_PRESETS,
+  type OkenScenePresetId,
+  smoothCorners,
+} from '../services/paperCropMath';
 import { idCardToSinglePdf, imagesToPdf } from '../services/pdfService';
 import { getWifiCameraProxyUrl } from '../services/syncClient';
-import type { DocumentCategory, ScannerSettings, WifiCameraSource } from '../types';
+import type {
+  CornerPoint,
+  DocumentCategory,
+  DocumentFilterMode,
+  ScannerSettings,
+  WifiCameraSource,
+} from '../types';
+import { OkenReviewStudio } from './OkenReviewStudio';
 
-export type CaptureMode = 'quick' | 'auto' | 'document' | 'image' | 'id-card' | 'batch';
+export type CaptureMode =
+  | 'book'
+  | 'to-text'
+  | 'document'
+  | 'auto'
+  | 'quick'
+  | 'image'
+  | 'id-card'
+  | 'qr-code'
+  | 'batch';
+
+type IdCardTemplate = 'single' | 'license' | 'passport';
+
+interface PendingReview {
+  rawUrl: string;
+  croppedUrl: string;
+  corners: CornerPoint[];
+  title: string;
+  category: DocumentCategory;
+  modeAtCapture: CaptureMode;
+}
 
 interface ScannerCameraStudioProps {
   mode: CaptureMode;
@@ -70,17 +102,6 @@ const SAMPLE_SCENES = [
   },
 ];
 
-const DOC_TYPES = [
-  'A4 Document',
-  'Letter Document',
-  'Receipt',
-  'Passport Page',
-  'Certificate',
-  'Form',
-  'Note',
-  'Custom Size',
-];
-
 export function ScannerCameraStudio({
   mode,
   settings,
@@ -96,46 +117,61 @@ export function ScannerCameraStudio({
   const prevGrayRef = useRef<Float32Array | null>(null);
   const lastAutoCaptureAtRef = useRef<number>(0);
 
+  // Clean 5-icon top bar states matching Oken capture UI
+  const [flashMode, setFlashMode] = useState<'auto' | 'on' | 'off'>('auto');
+  const [hdEnabled, setHdEnabled] = useState(settings.resolution !== 'fast');
+  const [defaultPreset, setDefaultPreset] = useState<OkenScenePresetId>('auto');
+  const [showPresetStrip, setShowPresetStrip] = useState(false);
+  const [gridOverlay, setGridOverlay] = useState(false);
+  const [showSettingsSheet, setShowSettingsSheet] = useState(false);
+
+  // Camera source & sample fallback state (tucked cleanly inside Gear settings)
   const [feedSource, setFeedSource] = useState<'device' | 'wifi'>('device');
   const [wifiCameras, setWifiCameras] = useState<WifiCameraSource[]>([]);
   const [activeWifiCamId, setActiveWifiCamId] = useState('virtual-wifi-cam');
-  const [wifiCamStatus, setWifiCamStatus] = useState('Ready');
   const [showAddWifiForm, setShowAddWifiForm] = useState(false);
   const [newWifiName, setNewWifiName] = useState('');
   const [newWifiUrl, setNewWifiUrl] = useState('http://192.168.1.');
 
-  const [zoomLevel, setZoomLevel] = useState(1);
-
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState('');
   const [activeSampleIdx, setActiveSampleIdx] = useState(0);
-  const [docTypePreset, setDocTypePreset] = useState(DOC_TYPES[0]);
   const [flashActive, setFlashActive] = useState(false);
   const [quickCount, setQuickCount] = useState(0);
   const [statusBanner, setStatusBanner] = useState('');
-  const [gridOverlay, setGridOverlay] = useState(true);
-  const [mirrorView, setMirrorView] = useState(false);
-  const [timerDelaySec, setTimerDelaySec] = useState<0 | 3>(0);
-  const [countdown, setCountdown] = useState<number | null>(null);
 
-  // Auto Capture real-time telemetry
-  const [autoEnabled, setAutoEnabled] = useState(true);
-  const [sensitivity, setSensitivity] = useState(settings.autoCaptureSensitivity || 7);
-  const [autoState, setAutoState] = useState<'searching' | 'detected' | 'hold-steady' | 'ready' | 'captured'>(
-    'searching'
-  );
-  const [stabilityPct, setStabilityPct] = useState(0);
+  // Paper-edge auto-crop state (live green polygon)
+  const [autoCropPaper, setAutoCropPaper] = useState(settings.autoCrop ?? true);
+  const [liveCorners, setLiveCorners] = useState<CornerPoint[]>(defaultPaperCorners());
+  const [paperDetected, setPaperDetected] = useState(false);
+  const liveCornersRef = useRef<CornerPoint[]>(defaultPaperCorners());
+  const [pendingReview, setPendingReview] = useState<PendingReview | null>(null);
+  const [croppingBusy, setCroppingBusy] = useState(false);
 
-  // ID Card dual-side state
+  // Auto capture toggle (hands-free mode)
+  const [autoEnabled, setAutoEnabled] = useState(mode === 'auto');
+  const [sensitivity] = useState(settings.autoCaptureSensitivity || 7);
+
+  // ID Card 1:1 A4 Maker state
+  const [idTemplate, setIdTemplate] = useState<IdCardTemplate>('license');
   const [idFront, setIdFront] = useState<string | null>(null);
   const [idBack, setIdBack] = useState<string | null>(null);
-  const [idPresetName, setIdPresetName] = useState('Standard Card (CR80)');
+  const [idA4Preview, setIdA4Preview] = useState<string | null>(null);
 
-  // Batch scan session state
+  // QR & To-Text result state
+  const [qrResult, setQrResult] = useState('');
+  const [extractedSnippet, setExtractedSnippet] = useState('');
+
+  // Multi-page batch / book session
   const [batchPages, setBatchPages] = useState<string[]>([]);
   const [savingBatch, setSavingBatch] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const docImportInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    setAutoEnabled(mode === 'auto');
+  }, [mode]);
 
   useEffect(() => {
     getSavedWifiCameras().then((cams) => {
@@ -144,20 +180,35 @@ export function ScannerCameraStudio({
     });
   }, []);
 
-  // Start / Stop real WebRTC camera
+  useEffect(() => {
+    if (mode !== 'id-card' || !idFront) {
+      setIdA4Preview(null);
+      return;
+    }
+    let cancelled = false;
+    composeIdCardA4Sheet(idFront, idBack, idTemplate, 0.85)
+      .then((res) => {
+        if (!cancelled) setIdA4Preview(res.dataUrl);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, idFront, idBack, idTemplate]);
+
   const startCamera = useCallback(async () => {
     setCameraError('');
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        setCameraError('Camera API unavailable in this browser context. Using Sample Feed & Gallery Import.');
+        setCameraError('Camera unavailable');
         setCameraActive(false);
         return;
       }
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: 'environment' },
-          width: { ideal: settings.resolution === 'high' ? 1920 : 1280 },
-          height: { ideal: settings.resolution === 'high' ? 1080 : 720 },
+          width: { ideal: hdEnabled ? 1920 : 1280 },
+          height: { ideal: hdEnabled ? 1080 : 720 },
         },
         audio: false,
       });
@@ -168,10 +219,10 @@ export function ScannerCameraStudio({
       }
       setCameraActive(true);
     } catch {
-      setCameraError('Live camera not attached or permission denied — Sample Viewfinder & File Import are ready.');
+      setCameraError('Using preview camera feed');
       setCameraActive(false);
     }
-  }, [settings.resolution]);
+  }, [hdEnabled]);
 
   useEffect(() => {
     startCamera();
@@ -183,7 +234,7 @@ export function ScannerCameraStudio({
     };
   }, [startCamera]);
 
-  // Draw active sample feed onto canvas when live webcam isn't running
+  // Draw active sample feed when live webcam isn't active
   useEffect(() => {
     if (cameraActive || feedSource !== 'device') return;
     let mounted = true;
@@ -203,7 +254,7 @@ export function ScannerCameraStudio({
     };
   }, [cameraActive, activeSampleIdx, feedSource]);
 
-  // Poll Wi-Fi / IP Camera snapshot stream onto wifiCanvasRef
+  // Poll Wi-Fi camera when selected in Gear Settings
   useEffect(() => {
     if (feedSource !== 'wifi') return;
     const cam = wifiCameras.find((c) => c.id === activeWifiCamId) || wifiCameras[0];
@@ -221,25 +272,20 @@ export function ScannerCameraStudio({
 
       const img = new Image();
       img.crossOrigin = 'anonymous';
-      if (cam.kind === 'virtual-demo') {
-        img.src = SAMPLE_SCENES[activeSampleIdx].src;
-      } else {
-        img.src = getWifiCameraProxyUrl(cam.snapshotUrl);
-      }
+      img.src =
+        cam.kind === 'virtual-demo'
+          ? SAMPLE_SCENES[activeSampleIdx].src
+          : getWifiCameraProxyUrl(cam.snapshotUrl);
 
       img.onload = () => {
         if (cancelled) return;
         canvas.width = img.width;
         canvas.height = img.height;
         ctx.drawImage(img, 0, 0);
-        setWifiCamStatus(
-          cam.kind === 'virtual-demo' ? `Wi-Fi Stream Active · ${cam.name}` : `Connected · ${cam.name}`
-        );
         timer = window.setTimeout(drawFrame, cam.pollMs || 500);
       };
       img.onerror = () => {
         if (cancelled) return;
-        setWifiCamStatus(`Waiting for camera at ${cam.snapshotUrl} — retrying...`);
         timer = window.setTimeout(drawFrame, 1500);
       };
     };
@@ -272,7 +318,7 @@ export function ScannerCameraStudio({
     setShowAddWifiForm(false);
     setNewWifiName('');
     await saveWifiCameras(updated);
-    setStatusBanner(`Added Wi-Fi camera: ${cam.name}`);
+    setStatusBanner(`Connected ${cam.name}`);
   };
 
   const handleRemoveWifiCamera = async (id: string) => {
@@ -308,127 +354,187 @@ export function ScannerCameraStudio({
 
     if (!srcEl || srcW === 0 || srcH === 0) return null;
 
-    // Apply zoom center-crop when zoomLevel > 1
-    const cropW = Math.round(srcW / zoomLevel);
-    const cropH = Math.round(srcH / zoomLevel);
-    const sx = Math.round((srcW - cropW) / 2);
-    const sy = Math.round((srcH - cropH) / 2);
-
     const canvas = document.createElement('canvas');
-    canvas.width = cropW;
-    canvas.height = cropH;
+    canvas.width = srcW;
+    canvas.height = srcH;
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
-    ctx.drawImage(srcEl, sx, sy, cropW, cropH, 0, 0, cropW, cropH);
+    ctx.drawImage(srcEl, 0, 0, srcW, srcH);
     return canvas.toDataURL(fmt, quality);
-  }, [cameraActive, feedSource, settings.defaultFormat, settings.jpegQuality, zoomLevel]);
+  }, [cameraActive, feedSource, settings.defaultFormat, settings.jpegQuality]);
 
-  const triggerCapture = useCallback(async () => {
-    const rawDataUrl = grabCurrentFrameDataUrl();
-    if (!rawDataUrl) return;
-
-    // Visual shutter flash (< 160ms, non-blocking)
-    setFlashActive(true);
-    window.setTimeout(() => setFlashActive(false), 140);
-
-    if (mode === 'id-card') {
-      if (!idFront) {
-        setIdFront(rawDataUrl);
-        setStatusBanner('Front side captured. Align Back side and tap Capture.');
-      } else {
-        setIdBack(rawDataUrl);
-        setStatusBanner('Back side captured. Ready to combine into single PDF or Image.');
+  const cropToPaperEdges = useCallback(
+    async (
+      rawDataUrl: string,
+      hintCorners?: CornerPoint[]
+    ): Promise<{ croppedUrl: string; corners: CornerPoint[] }> => {
+      if (!autoCropPaper || mode === 'image' || mode === 'qr-code') {
+        return {
+          croppedUrl: rawDataUrl,
+          corners: [
+            { x: 0.02, y: 0.02 },
+            { x: 0.98, y: 0.02 },
+            { x: 0.98, y: 0.98 },
+            { x: 0.02, y: 0.98 },
+          ],
+        };
       }
-      return;
-    }
+      try {
+        const detected = hintCorners || (await detectDocumentCorners(rawDataUrl));
+        const warped = await warpPerspective(rawDataUrl, detected, hdEnabled ? 1700 : 1200);
+        return { croppedUrl: warped.dataUrl, corners: detected };
+      } catch {
+        return { croppedUrl: rawDataUrl, corners: defaultPaperCorners() };
+      }
+    },
+    [autoCropPaper, hdEnabled, mode]
+  );
 
-    if (mode === 'batch') {
-      setBatchPages((prev) => [...prev, rawDataUrl]);
-      setStatusBanner(`Page ${batchPages.length + 1} added to batch session.`);
-      return;
-    }
+  const triggerCapture = useCallback(
+    async (isAutoTrigger = false) => {
+      if (pendingReview) return;
+      const rawDataUrl = grabCurrentFrameDataUrl();
+      if (!rawDataUrl) return;
 
-    // Quick Capture, Auto Capture, Document Scan, Image Scan:
-    // Priority: Instant local save & camera remains immediately ready!
-    setQuickCount((c) => c + 1);
-    const chosenSample = SAMPLE_SCENES[activeSampleIdx];
-    const targetCategory: DocumentCategory =
-      mode === 'image'
-        ? 'Images'
-        : mode === 'document' && docTypePreset === 'Receipt'
-        ? 'Receipts'
-        : !cameraActive
-        ? chosenSample.category
-        : settings.destinationFolder;
+      setFlashActive(true);
+      window.setTimeout(() => setFlashActive(false), 140);
 
-    const titlePrefix =
-      mode === 'quick'
-        ? 'Quick Scan'
-        : mode === 'auto'
-        ? 'Auto Scan'
-        : mode === 'image'
-        ? 'Image Scan'
-        : docTypePreset;
-
-    setStatusBanner(`Captured & queued (${titlePrefix}). Camera ready.`);
-
-    // Fire-and-forget immediate save + background enhancement
-    void (async () => {
-      let finalUrl = rawDataUrl;
-      if (settings.autoEnhance && mode !== 'image') {
+      if (mode === 'qr-code') {
         try {
-          const enhanced = await processImage(rawDataUrl, {
-            ...DEFAULT_ADJUSTMENTS,
-            filterMode: settings.defaultFilter,
+          const Detector = (
+            window as unknown as {
+              BarcodeDetector?: new (opts?: { formats?: string[] }) => {
+                detect: (img: ImageBitmapSource) => Promise<Array<{ rawValue: string }>>;
+              };
+            }
+          ).BarcodeDetector;
+          if (Detector) {
+            const img = new Image();
+            img.src = rawDataUrl;
+            await new Promise((r) => (img.onload = r));
+            const det = new Detector({ formats: ['qr_code', 'code_128', 'ean_13'] });
+            const found = await det.detect(img);
+            if (found.length > 0 && found[0].rawValue) {
+              setQrResult(found[0].rawValue);
+              setStatusBanner(`QR decoded: ${found[0].rawValue.slice(0, 48)}`);
+              return;
+            }
+          }
+        } catch {
+          // fallback below
+        }
+        setQrResult('No live QR code detected in frame — saved frame.');
+      }
+
+      setCroppingBusy(true);
+      try {
+        const { croppedUrl, corners } = await cropToPaperEdges(rawDataUrl);
+
+        if (mode === 'id-card') {
+          if (!idFront) {
+            setIdFront(croppedUrl);
+            setStatusBanner('Front side captured. Align Back side and capture.');
+          } else {
+            setIdBack(croppedUrl);
+            setStatusBanner('Back side captured. Tap "Make it now" to save A4 PDF.');
+          }
+          return;
+        }
+
+        if (mode === 'book') {
+          const halves = await splitBookSpread(croppedUrl, settings.jpegQuality);
+          setBatchPages((prev) => [...prev, halves.left, halves.right]);
+          setStatusBanner('Spread cropped & split into 2 pages.');
+          return;
+        }
+
+        if (mode === 'batch') {
+          setBatchPages((prev) => [...prev, croppedUrl]);
+          setStatusBanner(`Page ${batchPages.length + 1} added.`);
+          return;
+        }
+
+        const chosenSample = SAMPLE_SCENES[activeSampleIdx];
+        const targetCategory: DocumentCategory =
+          mode === 'image'
+            ? 'Images'
+            : !cameraActive
+            ? chosenSample.category
+            : settings.destinationFolder;
+
+        const titlePrefix =
+          mode === 'to-text'
+            ? 'OCR Scan'
+            : mode === 'auto'
+            ? 'Auto Scan'
+            : 'Document';
+
+        if (isAutoTrigger && autoEnabled) {
+          setQuickCount((c) => c + 1);
+          const presetOut = await applyOkenScenePreset(croppedUrl, defaultPreset, {
             quality: settings.jpegQuality,
             format: settings.defaultFormat,
-            maxWidth: settings.resolution === 'fast' ? 1100 : 1600,
+            maxWidth: hdEnabled ? 1700 : 1200,
           });
-          finalUrl = enhanced.dataUrl;
-        } catch {
-          finalUrl = rawDataUrl;
+          const ext =
+            settings.defaultFormat === 'image/png'
+              ? 'png'
+              : settings.defaultFormat === 'image/webp'
+              ? 'webp'
+              : 'jpg';
+          await onQuickCaptureSave({
+            dataUrl: presetOut.dataUrl,
+            title: `${titlePrefix} #${quickCount + 1}`,
+            category: targetCategory,
+            mimeType: settings.defaultFormat,
+            fileExtension: ext,
+          });
+          setStatusBanner('Paper auto-cropped & saved.');
+          return;
         }
-      }
-      const ext = settings.defaultFormat === 'image/png' ? 'png' : settings.defaultFormat === 'image/webp' ? 'webp' : 'jpg';
-      await onQuickCaptureSave({
-        dataUrl: finalUrl,
-        title: `${titlePrefix} #${quickCount + 1}`,
-        category: targetCategory,
-        mimeType: settings.defaultFormat,
-        fileExtension: ext,
-      });
-    })();
-  }, [
-    activeSampleIdx,
-    batchPages.length,
-    cameraActive,
-    docTypePreset,
-    grabCurrentFrameDataUrl,
-    idFront,
-    mode,
-    onQuickCaptureSave,
-    quickCount,
-    settings.autoEnhance,
-    settings.defaultFilter,
-    settings.defaultFormat,
-    settings.destinationFolder,
-    settings.jpegQuality,
-    settings.resolution,
-  ]);
 
-  // Auto Capture stability & blur polling loop
+        setPendingReview({
+          rawUrl: rawDataUrl,
+          croppedUrl,
+          corners,
+          title: `${titlePrefix} #${quickCount + 1}`,
+          category: targetCategory,
+          modeAtCapture: mode,
+        });
+      } finally {
+        setCroppingBusy(false);
+      }
+    },
+    [
+      activeSampleIdx,
+      autoEnabled,
+      batchPages.length,
+      cameraActive,
+      cropToPaperEdges,
+      defaultPreset,
+      grabCurrentFrameDataUrl,
+      hdEnabled,
+      idFront,
+      mode,
+      onQuickCaptureSave,
+      paperDetected,
+      pendingReview,
+      quickCount,
+      settings.defaultFormat,
+      settings.destinationFolder,
+      settings.jpegQuality,
+    ]
+  );
+
+  // Live Paper-Edge Detection & optional Auto-Capture polling loop
   useEffect(() => {
-    if (mode !== 'auto' || !autoEnabled) {
-      setAutoState('searching');
-      setStabilityPct(0);
-      return;
-    }
+    if (pendingReview) return;
 
     let steadyStreak = 0;
     const interval = window.setInterval(() => {
       const aCanvas = analysisCanvasRef.current;
       if (!aCanvas) return;
-      const ctx = aCanvas.getContext('2d');
+      const ctx = aCanvas.getContext('2d', { willReadFrequently: true });
       if (!ctx) return;
 
       const sourceEl =
@@ -439,37 +545,66 @@ export function ScannerCameraStudio({
           : sampleCanvasRef.current;
       if (!sourceEl) return;
 
-      aCanvas.width = 120;
-      aCanvas.height = 90;
-      ctx.drawImage(sourceEl, 0, 0, 120, 90);
+      const srcW =
+        sourceEl instanceof HTMLVideoElement ? sourceEl.videoWidth : sourceEl.width;
+      const srcH =
+        sourceEl instanceof HTMLVideoElement ? sourceEl.videoHeight : sourceEl.height;
+      if (!srcW || !srcH) return;
+
+      const aw = 200;
+      const ah = Math.max(100, Math.round((srcH / srcW) * aw));
+      aCanvas.width = aw;
+      aCanvas.height = ah;
+      ctx.drawImage(sourceEl, 0, 0, aw, ah);
+
+      if (autoCropPaper && mode !== 'image' && mode !== 'qr-code') {
+        const edgeRes = detectLiveFrameCorners(aCanvas);
+        setPaperDetected(edgeRes.detected);
+        if (edgeRes.detected) {
+          const smoothed = smoothCorners(liveCornersRef.current, edgeRes.corners, 0.42);
+          liveCornersRef.current = smoothed;
+          setLiveCorners(smoothed);
+        } else {
+          const fallback = defaultPaperCorners();
+          liveCornersRef.current = fallback;
+          setLiveCorners(fallback);
+        }
+      } else {
+        setPaperDetected(false);
+      }
+
+      if (!autoEnabled) return;
 
       const res = analyzeFrameStability(aCanvas, prevGrayRef.current, sensitivity);
       prevGrayRef.current = res.currentGray;
 
       if (res.status === 'ready') {
         steadyStreak += 1;
-        setStabilityPct(Math.min(100, steadyStreak * 34));
         if (steadyStreak >= 3) {
           const now = Date.now();
-          if (now - lastAutoCaptureAtRef.current > 3500) {
+          if (now - lastAutoCaptureAtRef.current > 3800) {
             lastAutoCaptureAtRef.current = now;
             steadyStreak = 0;
-            setAutoState('captured');
-            void triggerCapture();
-            window.setTimeout(() => setAutoState('searching'), 1200);
+            void triggerCapture(true);
             return;
           }
         }
-        setAutoState('ready');
       } else {
         steadyStreak = Math.max(0, steadyStreak - 1);
-        setStabilityPct(steadyStreak * 25);
-        setAutoState(res.status);
       }
-    }, 350);
+    }, 280);
 
     return () => window.clearInterval(interval);
-  }, [mode, autoEnabled, cameraActive, sensitivity, triggerCapture]);
+  }, [
+    autoCropPaper,
+    autoEnabled,
+    cameraActive,
+    feedSource,
+    mode,
+    pendingReview,
+    sensitivity,
+    triggerCapture,
+  ]);
 
   const handleGalleryFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
@@ -480,20 +615,35 @@ export function ScannerCameraStudio({
       reader.onload = async () => {
         const dataUrl = String(reader.result || '');
         if (!dataUrl) return;
-        if (mode === 'batch') {
-          setBatchPages((prev) => [...prev, dataUrl]);
-        } else if (mode === 'id-card') {
-          if (!idFront) setIdFront(dataUrl);
-          else setIdBack(dataUrl);
-        } else {
+        const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+        if (isPdf) {
           await onQuickCaptureSave({
             dataUrl,
             title: file.name.replace(/\.[^.]+$/, ''),
-            category: mode === 'image' ? 'Images' : 'Imported',
-            mimeType: file.type || 'image/jpeg',
-            fileExtension: file.name.split('.').pop() || 'jpg',
+            category: 'PDFs',
+            mimeType: 'application/pdf',
+            fileExtension: 'pdf',
           });
           setStatusBanner(`Imported ${file.name}`);
+          return;
+        }
+        if (mode === 'batch' || mode === 'book') {
+          const { croppedUrl } = await cropToPaperEdges(dataUrl);
+          setBatchPages((prev) => [...prev, croppedUrl]);
+        } else if (mode === 'id-card') {
+          const { croppedUrl } = await cropToPaperEdges(dataUrl);
+          if (!idFront) setIdFront(croppedUrl);
+          else setIdBack(croppedUrl);
+        } else {
+          const { croppedUrl, corners } = await cropToPaperEdges(dataUrl);
+          setPendingReview({
+            rawUrl: dataUrl,
+            croppedUrl,
+            corners,
+            title: file.name.replace(/\.[^.]+$/, ''),
+            category: mode === 'image' ? 'Images' : 'Imported',
+            modeAtCapture: mode,
+          });
         }
       };
       reader.readAsDataURL(file);
@@ -505,47 +655,32 @@ export function ScannerCameraStudio({
     if (!idFront) return;
     setSavingBatch(true);
     try {
+      const templateLabel =
+        idTemplate === 'passport' ? 'Passport' : idTemplate === 'single' ? 'Single Side' : 'Driver License / ID';
       if (asPdf) {
         const pdf = await idCardToSinglePdf(idFront, idBack, settings.jpegQuality);
         await onQuickCaptureSave({
           dataUrl: pdf.dataUrl,
-          title: `ID Card (${idPresetName})`,
+          title: `ID Card (${templateLabel})`,
           category: 'ID_Cards',
           mimeType: 'application/pdf',
           fileExtension: 'pdf',
           pageCount: 1,
         });
       } else {
-        // Combine Front + Back vertically into single image
-        const imgF = new Image();
-        imgF.src = idFront;
-        await new Promise((r) => (imgF.onload = r));
-        const canvas = document.createElement('canvas');
-        canvas.width = imgF.width;
-        canvas.height = idBack ? imgF.height * 2 + 40 : imgF.height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-          ctx.drawImage(imgF, 0, 0);
-          if (idBack) {
-            const imgB = new Image();
-            imgB.src = idBack;
-            await new Promise((r) => (imgB.onload = r));
-            ctx.drawImage(imgB, 0, imgF.height + 40, imgF.width, imgF.height);
-          }
-          await onQuickCaptureSave({
-            dataUrl: canvas.toDataURL('image/jpeg', settings.jpegQuality),
-            title: `ID Card Image (${idPresetName})`,
-            category: 'ID_Cards',
-            mimeType: 'image/jpeg',
-            fileExtension: 'jpg',
-          });
-        }
+        const sheet = await composeIdCardA4Sheet(idFront, idBack, idTemplate, settings.jpegQuality);
+        await onQuickCaptureSave({
+          dataUrl: sheet.dataUrl,
+          title: `ID Card A4 (${templateLabel})`,
+          category: 'ID_Cards',
+          mimeType: 'image/jpeg',
+          fileExtension: 'jpg',
+        });
       }
       setIdFront(null);
       setIdBack(null);
-      setStatusBanner('ID Card saved and queued for transfer.');
+      setIdA4Preview(null);
+      setStatusBanner(`Saved 1:1 A4 ${templateLabel}.`);
     } finally {
       setSavingBatch(false);
     }
@@ -558,7 +693,7 @@ export function ScannerCameraStudio({
       const pdf = await imagesToPdf(batchPages);
       await onQuickCaptureSave({
         dataUrl: pdf.dataUrl,
-        title: `Batch Scan (${batchPages.length} pages)`,
+        title: `${mode === 'book' ? 'Book Scan' : 'Batch Scan'} (${batchPages.length} pages)`,
         category: 'PDFs',
         mimeType: 'application/pdf',
         fileExtension: 'pdf',
@@ -566,468 +701,535 @@ export function ScannerCameraStudio({
         pages: batchPages,
       });
       setBatchPages([]);
-      setStatusBanner(`Combined ${pdf.pageCount} pages into PDF & queued for transfer.`);
+      setStatusBanner(`Saved ${pdf.pageCount}-page PDF.`);
     } finally {
       setSavingBatch(false);
     }
   };
 
-  const modeTabs: Array<{ id: CaptureMode; label: string; icon: typeof Zap }> = [
-    { id: 'quick', label: 'Quick', icon: Zap },
-    { id: 'auto', label: 'Auto', icon: ScanLine },
-    { id: 'document', label: 'Document', icon: FilePlus2 },
-    { id: 'image', label: 'Image', icon: FolderOpen },
-    { id: 'id-card', label: 'ID Card', icon: CreditCard },
-    { id: 'batch', label: 'Batch', icon: Layers },
+  const handleConfirmOkenReview = async (result: {
+    dataUrl: string;
+    filterMode: DocumentFilterMode;
+    title?: string;
+    pages?: string[];
+  }) => {
+    if (!pendingReview) return;
+    const ext =
+      settings.defaultFormat === 'image/png'
+        ? 'png'
+        : settings.defaultFormat === 'image/webp'
+        ? 'webp'
+        : 'jpg';
+    const finalTitle = result.title || pendingReview.title;
+    setQuickCount((c) => c + 1);
+    await onQuickCaptureSave({
+      dataUrl: result.dataUrl,
+      title: finalTitle,
+      category: pendingReview.category,
+      mimeType: settings.defaultFormat,
+      fileExtension: ext,
+      pageCount: result.pages ? result.pages.length : 1,
+      pages: result.pages,
+    });
+
+    if (pendingReview.modeAtCapture === 'to-text') {
+      try {
+        const ocr = await runOcrExtraction(result.dataUrl, settings.ocrDefaultLang);
+        setExtractedSnippet(ocr.text.trim() || 'No readable text detected.');
+      } catch {
+        setExtractedSnippet('Saved scan. Open OCR to extract text.');
+      }
+    }
+
+    setPendingReview(null);
+    setStatusBanner(`Saved "${finalTitle}".`);
+  };
+
+  if (pendingReview) {
+    return (
+      <OkenReviewStudio
+        rawCaptureUrl={pendingReview.rawUrl}
+        initialCroppedUrl={pendingReview.croppedUrl}
+        initialCorners={pendingReview.corners}
+        initialPreset={pendingReview.modeAtCapture === 'image' ? 'original' : defaultPreset}
+        title={pendingReview.title}
+        quality={settings.jpegQuality}
+        format={settings.defaultFormat}
+        saveLabel={pendingReview.modeAtCapture === 'to-text' ? 'Save & Extract Text' : 'Save Scan'}
+        onRetake={() => setPendingReview(null)}
+        onConfirmSave={handleConfirmOkenReview}
+      />
+    );
+  }
+
+  // Exact 5 modes from Oken capture screen: Book · To Text · Docs · ID Card · QR Code
+  const modeTabs: Array<{ id: CaptureMode; label: string }> = [
+    { id: 'book', label: 'Book' },
+    { id: 'to-text', label: 'To Text' },
+    { id: 'document', label: 'Docs' },
+    { id: 'id-card', label: 'ID Card' },
+    { id: 'qr-code', label: 'QR Code' },
   ];
 
-  const autoIndicatorText = {
-    searching: 'Scanning frame for document edges...',
-    detected: 'Document detected — keep inside frame',
-    'hold-steady': 'Hold steady — sharpening focus',
-    ready: `Ready to capture (${stabilityPct}%)`,
-    captured: 'Captured successfully',
-  }[autoState];
+  // Treat 'auto', 'quick', 'batch', 'image' as active under Docs pill visually if entered via shortcut
+  const activeModeForPill: CaptureMode =
+    mode === 'auto' || mode === 'quick' || mode === 'batch' || mode === 'image'
+      ? 'document'
+      : mode;
 
   return (
-    <div className="flex flex-col h-full bg-slate-950 text-white rounded-2xl overflow-hidden border border-slate-800">
-      {/* Mode Selector Strip */}
-      <div className="flex items-center justify-between gap-2 px-3 py-2.5 bg-slate-900 border-b border-slate-800 overflow-x-auto">
-        <div className="flex items-center gap-1">
-          {modeTabs.map((t) => {
-            const Icon = t.icon;
-            const active = mode === t.id;
-            return (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => onModeChange(t.id)}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 transition-colors min-h-[36px] ${
-                  active
-                    ? 'bg-emerald-600 text-white'
-                    : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-                }`}
-              >
-                <Icon className="w-3.5 h-3.5" />
-                {t.label}
-              </button>
-            );
-          })}
-        </div>
-        {onClose && (
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-xs text-slate-400 hover:text-white px-2.5 py-1.5 rounded-lg hover:bg-slate-800 whitespace-nowrap shrink-0"
+    <div className="flex flex-col h-full bg-black text-white select-none overflow-hidden">
+      {/* 1. Ultra-Minimal Oken 5-Icon Top Utility Bar */}
+      <div className="h-12 px-6 bg-black flex items-center justify-between shrink-0 z-20">
+        {/* Flash Auto / On / Off */}
+        <button
+          type="button"
+          onClick={() =>
+            setFlashMode((m) => (m === 'auto' ? 'on' : m === 'on' ? 'off' : 'auto'))
+          }
+          aria-label={`Flash mode ${flashMode}`}
+          className="relative p-2 text-white hover:text-emerald-400 transition-colors"
+        >
+          {flashMode === 'off' ? (
+            <ZapOff className="w-5 h-5 text-slate-400" />
+          ) : (
+            <Zap className={`w-5 h-5 ${flashMode === 'on' ? 'text-amber-400 fill-amber-400' : 'text-white'}`} />
+          )}
+          {flashMode === 'auto' && (
+            <span className="absolute top-1.5 right-0.5 text-[9px] font-bold leading-none text-white">
+              A
+            </span>
+          )}
+        </button>
+
+        {/* HD Resolution Toggle */}
+        <button
+          type="button"
+          onClick={() => setHdEnabled((v) => !v)}
+          aria-label={hdEnabled ? 'HD Capture ON' : 'HD Capture OFF'}
+          className="relative p-1.5 flex items-center justify-center"
+        >
+          <span
+            className={`px-1.5 py-0.5 rounded border text-[11px] font-extrabold tracking-tight leading-none transition-colors ${
+              hdEnabled
+                ? 'border-white text-white bg-white/10'
+                : 'border-slate-500 text-slate-400'
+            }`}
           >
-            Done
-          </button>
-        )}
+            HD
+          </span>
+          {hdEnabled && (
+            <span className="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-rose-500" />
+          )}
+        </button>
+
+        {/* Multi-Scene Color Filter Picker (3-circle Oken icon) */}
+        <button
+          type="button"
+          onClick={() => {
+            setShowSettingsSheet(false);
+            setShowPresetStrip((s) => !s);
+          }}
+          aria-label="Scan filter preset"
+          className={`p-2 rounded-lg transition-colors ${
+            showPresetStrip ? 'text-emerald-400' : 'text-white hover:text-emerald-400'
+          }`}
+        >
+          <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" aria-hidden="true">
+            <circle cx="12" cy="8.5" r="4.2" fill="currentColor" fillOpacity="0.88" />
+            <circle cx="8.8" cy="14" r="4.2" fill="currentColor" fillOpacity="0.55" />
+            <circle cx="15.2" cy="14" r="4.2" fill="currentColor" fillOpacity="0.72" />
+          </svg>
+        </button>
+
+        {/* Alignment Grid Toggle */}
+        <button
+          type="button"
+          onClick={() => setGridOverlay((g) => !g)}
+          aria-label="Toggle alignment grid"
+          className={`p-2 transition-colors ${
+            gridOverlay ? 'text-emerald-400' : 'text-white hover:text-emerald-400'
+          }`}
+        >
+          <Grid3X3 className="w-5 h-5" />
+        </button>
+
+        {/* Compact Settings Cog (tucks optional controls neatly out of sight) */}
+        <button
+          type="button"
+          onClick={() => {
+            setShowPresetStrip(false);
+            setShowSettingsSheet((s) => !s);
+          }}
+          aria-label="Camera settings"
+          className={`p-2 transition-colors ${
+            showSettingsSheet ? 'text-emerald-400' : 'text-white hover:text-emerald-400'
+          }`}
+        >
+          <Settings className="w-5 h-5" />
+        </button>
       </div>
 
-      {/* Contextual Preset Strip + Wi-Fi Camera Source + Zoom Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2 bg-slate-900/70 border-b border-slate-800/80 text-xs">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex p-0.5 bg-slate-800 rounded-lg">
+      {/* Optional Filter Strip (only shown when Filter icon tapped) */}
+      {showPresetStrip && (
+        <div className="px-4 py-2 bg-[#111317] border-y border-white/10 flex items-center gap-2 overflow-x-auto shrink-0 z-20">
+          {OKEN_SCENE_PRESETS.map((p) => (
             <button
+              key={p.id}
               type="button"
-              onClick={() => setFeedSource('device')}
-              className={`px-2.5 py-1 rounded-md font-medium ${
-                feedSource === 'device' ? 'bg-emerald-700 text-white' : 'text-slate-300 hover:text-white'
+              onClick={() => {
+                setDefaultPreset(p.id);
+                setShowPresetStrip(false);
+              }}
+              className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap shrink-0 transition-colors ${
+                defaultPreset === p.id
+                  ? 'bg-[#00995a] text-white'
+                  : 'bg-white/10 text-slate-300 hover:bg-white/15'
               }`}
             >
-              Device Cam
+              {p.label}
             </button>
+          ))}
+        </div>
+      )}
+
+      {/* Optional Clean Settings Sheet (only shown when Gear icon tapped) */}
+      {showSettingsSheet && (
+        <div className="px-4 py-3 bg-[#111317] border-y border-white/10 text-xs space-y-3 shrink-0 z-20">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <label className="flex items-center gap-2 text-slate-200">
+              <input
+                type="checkbox"
+                checked={autoCropPaper}
+                onChange={(e) => setAutoCropPaper(e.target.checked)}
+                className="accent-emerald-500 w-4 h-4"
+              />
+              Auto-Crop Paper Edges
+            </label>
+            <label className="flex items-center gap-2 text-slate-200">
+              <input
+                type="checkbox"
+                checked={autoEnabled}
+                onChange={(e) => setAutoEnabled(e.target.checked)}
+                className="accent-emerald-500 w-4 h-4"
+              />
+              Hands-Free Auto Capture
+            </label>
             <button
               type="button"
-              onClick={() => setFeedSource('wifi')}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md font-medium ${
-                feedSource === 'wifi' ? 'bg-emerald-700 text-white' : 'text-slate-300 hover:text-white'
+              onClick={() => onModeChange(mode === 'batch' ? 'document' : 'batch')}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-medium ${
+                mode === 'batch' ? 'bg-emerald-600 text-white' : 'bg-white/10 text-slate-200'
               }`}
             >
-              <Wifi className="w-3 h-3" />
-              Wi-Fi Camera
+              <Layers className="w-3.5 h-3.5" />
+              Multi-Page Batch: {mode === 'batch' ? 'ON' : 'OFF'}
             </button>
           </div>
 
-          {feedSource === 'wifi' && (
-            <div className="flex flex-wrap items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              aria-label="Camera feed source"
+              value={feedSource}
+              onChange={(e) => setFeedSource(e.target.value as 'device' | 'wifi')}
+              className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white"
+            >
+              <option value="device">Device Camera</option>
+              <option value="wifi">Wi-Fi / IP Camera</option>
+            </select>
+
+            {(!cameraActive ||
+              (feedSource === 'wifi' &&
+                wifiCameras.find((c) => c.id === activeWifiCamId)?.kind === 'virtual-demo')) && (
               <select
-                value={activeWifiCamId}
-                onChange={(e) => setActiveWifiCamId(e.target.value)}
-                className="bg-slate-800 border border-slate-700 rounded-md px-2 py-1 text-xs text-white max-w-[200px]"
+                aria-label="Sample camera scene"
+                value={activeSampleIdx}
+                onChange={(e) => setActiveSampleIdx(Number(e.target.value))}
+                className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white"
               >
-                {wifiCameras.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
+                {SAMPLE_SCENES.map((s, idx) => (
+                  <option key={s.id} value={idx}>
+                    Preview: {s.label}
                   </option>
                 ))}
               </select>
-              <button
-                type="button"
-                onClick={() => setShowAddWifiForm((s) => !s)}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-emerald-800 hover:bg-emerald-700 text-white font-medium"
-              >
-                <Plus className="w-3 h-3" />
-                Add Wi-Fi Cam
-              </button>
-              {wifiCameras.find((c) => c.id === activeWifiCamId)?.kind === 'http-snapshot' && (
+            )}
+
+            {feedSource === 'wifi' && (
+              <>
+                <select
+                  value={activeWifiCamId}
+                  onChange={(e) => setActiveWifiCamId(e.target.value)}
+                  className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white max-w-[160px]"
+                >
+                  {wifiCameras.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
                 <button
                   type="button"
-                  onClick={() => void handleRemoveWifiCamera(activeWifiCamId)}
-                  className="p-1 text-red-400 hover:text-red-300"
-                  title="Remove saved Wi-Fi camera"
+                  onClick={() => setShowAddWifiForm((s) => !s)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-700 text-white"
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
+                  <Plus className="w-3.5 h-3.5" /> Add
                 </button>
-              )}
-            </div>
-          )}
+                {wifiCameras.find((c) => c.id === activeWifiCamId)?.kind === 'http-snapshot' && (
+                  <button
+                    type="button"
+                    onClick={() => void handleRemoveWifiCamera(activeWifiCamId)}
+                    className="p-1 text-red-400"
+                    aria-label="Remove saved Wi-Fi camera"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </>
+            )}
 
-          {(!cameraActive || (feedSource === 'wifi' && wifiCameras.find((c) => c.id === activeWifiCamId)?.kind === 'virtual-demo')) && (
-            <>
-              <span className="text-slate-400">Scene:</span>
-              {SAMPLE_SCENES.map((s, idx) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  onClick={() => setActiveSampleIdx(idx)}
-                  className={`px-2 py-1 rounded-md text-xs font-medium transition-colors ${
-                    activeSampleIdx === idx
-                      ? 'bg-emerald-700 text-white'
-                      : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                  }`}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </>
-          )}
-          {mode === 'document' && (
-            <select
-              value={docTypePreset}
-              onChange={(e) => setDocTypePreset(e.target.value)}
-              className="bg-slate-800 border border-slate-700 rounded-md px-2 py-1 text-xs text-white"
-            >
-              {DOC_TYPES.map((d) => (
-                <option key={d} value={d}>
-                  {d}
-                </option>
-              ))}
-            </select>
-          )}
-          {mode === 'id-card' && (
-            <select
-              value={idPresetName}
-              onChange={(e) => setIdPresetName(e.target.value)}
-              className="bg-slate-800 border border-slate-700 rounded-md px-2 py-1 text-xs text-white"
-            >
-              <option value="Standard Card (CR80)">Standard Card (CR80)</option>
-              <option value="Passport / Booklet">Passport / Booklet</option>
-              <option value="Custom Badge Size">Custom Badge Size</option>
-            </select>
-          )}
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2.5">
-          {/* Optical / Digital Zoom Control */}
-          <div className="flex items-center gap-1 bg-slate-800 rounded-lg px-2 py-1">
-            <button
-              type="button"
-              onClick={() => setZoomLevel((z) => Math.max(1, Number((z - 0.25).toFixed(2))))}
-              className="p-0.5 text-slate-300 hover:text-white"
-              aria-label="Zoom out camera"
-            >
-              <ZoomOut className="w-3.5 h-3.5" />
-            </button>
-            {([1, 1.5, 2, 3] as const).map((preset) => (
+            {cameraError && (
               <button
-                key={preset}
                 type="button"
-                onClick={() => setZoomLevel(preset)}
-                className={`px-1.5 py-0.5 rounded text-[11px] font-mono tabular-nums ${
-                  zoomLevel === preset ? 'bg-emerald-700 text-white' : 'text-slate-300 hover:text-white'
-                }`}
+                onClick={startCamera}
+                className="text-emerald-400 hover:text-emerald-300 font-medium ml-auto"
               >
-                {preset}x
+                Retry Camera
               </button>
-            ))}
-            <button
-              type="button"
-              onClick={() => setZoomLevel((z) => Math.min(4, Number((z + 0.25).toFixed(2))))}
-              className="p-0.5 text-slate-300 hover:text-white"
-              aria-label="Zoom in camera"
-            >
-              <ZoomIn className="w-3.5 h-3.5" />
-            </button>
+            )}
           </div>
 
-          {mode === 'auto' && (
-            <div className="flex items-center gap-2">
-              <label className="text-slate-300 flex items-center gap-1.5">
-                <input
-                  type="checkbox"
-                  checked={autoEnabled}
-                  onChange={(e) => setAutoEnabled(e.target.checked)}
-                  className="accent-emerald-500"
-                />
-                Auto-Trigger
-              </label>
-              <label className="flex items-center gap-1.5 text-slate-400">
-                Sensitivity
-                <input
-                  type="range"
-                  min={1}
-                  max={10}
-                  value={sensitivity}
-                  onChange={(e) => setSensitivity(Number(e.target.value))}
-                  className="w-16 accent-emerald-500"
-                />
-              </label>
-            </div>
-          )}
-          <div className="flex items-center gap-1.5 border-l border-slate-800 pl-2">
-            <button
-              type="button"
-              onClick={() => setGridOverlay((g) => !g)}
-              className={`p-1.5 rounded-md ${gridOverlay ? 'bg-emerald-800 text-white' : 'bg-slate-800 text-slate-300'}`}
-              title="Toggle Alignment Grid"
-            >
-              <Grid3X3 className="w-3.5 h-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setMirrorView((m) => !m)}
-              className={`p-1.5 rounded-md ${mirrorView ? 'bg-emerald-800 text-white' : 'bg-slate-800 text-slate-300'}`}
-              title="Mirror Viewfinder"
-            >
-              <FlipHorizontal2 className="w-3.5 h-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setTimerDelaySec((t) => (t === 0 ? 3 : 0))}
-              className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs ${
-                timerDelaySec === 3 ? 'bg-emerald-800 text-white' : 'bg-slate-800 text-slate-300'
-              }`}
-              title="3s Self-Timer"
-            >
-              <Timer className="w-3.5 h-3.5" />
-              {timerDelaySec === 3 ? '3s' : '0s'}
-            </button>
-          </div>
-          {feedSource === 'device' && cameraError && (
-            <button
-              type="button"
-              onClick={startCamera}
-              className="inline-flex items-center gap-1 text-emerald-400 hover:text-emerald-300"
-            >
-              <RotateCcw className="w-3 h-3" />
-              Retry Camera
-            </button>
+          {showAddWifiForm && (
+            <form onSubmit={handleAddWifiCamera} className="flex flex-wrap items-center gap-2 pt-1">
+              <input
+                type="text"
+                value={newWifiName}
+                onChange={(e) => setNewWifiName(e.target.value)}
+                placeholder="Camera Name"
+                className="px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white w-36"
+              />
+              <input
+                type="url"
+                required
+                value={newWifiUrl}
+                onChange={(e) => setNewWifiUrl(e.target.value)}
+                placeholder="http://192.168.1.50:8080/shot.jpg"
+                className="flex-1 min-w-[180px] px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono"
+              />
+              <button type="submit" className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg font-semibold">
+                Connect
+              </button>
+            </form>
           )}
         </div>
-      </div>
-
-      {/* Add External Wi-Fi Camera Drawer */}
-      {showAddWifiForm && (
-        <form
-          onSubmit={handleAddWifiCamera}
-          className="px-4 py-2.5 bg-slate-900 border-b border-emerald-900/60 flex flex-wrap items-center gap-2 text-xs"
-        >
-          <span className="text-emerald-300 font-semibold">Add External Wi-Fi / IP Camera:</span>
-          <input
-            type="text"
-            value={newWifiName}
-            onChange={(e) => setNewWifiName(e.target.value)}
-            placeholder="Camera Name (e.g. Desk Android Cam)"
-            className="px-2.5 py-1.5 bg-slate-800 border border-slate-700 rounded-md text-white w-48"
-          />
-          <input
-            type="url"
-            required
-            value={newWifiUrl}
-            onChange={(e) => setNewWifiUrl(e.target.value)}
-            placeholder="http://192.168.1.50:8080/shot.jpg"
-            className="flex-1 min-w-[220px] px-2.5 py-1.5 bg-slate-800 border border-slate-700 rounded-md text-white font-mono"
-          />
-          <button
-            type="submit"
-            className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white font-semibold rounded-md"
-          >
-            Connect & Save
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowAddWifiForm(false)}
-            className="px-2.5 py-1.5 text-slate-400 hover:text-white"
-          >
-            Cancel
-          </button>
-        </form>
       )}
 
-      {/* Main Viewfinder */}
-      <div className="relative flex-1 min-h-[340px] flex items-center justify-center bg-black overflow-hidden p-3">
-        <video
-          ref={videoRef}
-          playsInline
-          muted
-          style={{
-            transform: `${mirrorView ? 'scaleX(-1) ' : ''}scale(${zoomLevel})`,
-            transformOrigin: 'center center',
-          }}
-          className={`max-h-full max-w-full rounded-lg object-contain transition-transform duration-150 ${
-            feedSource === 'device' && cameraActive ? 'block' : 'hidden'
-          }`}
-        />
-        <canvas
-          ref={sampleCanvasRef}
-          style={{
-            transform: `${mirrorView ? 'scaleX(-1) ' : ''}scale(${zoomLevel})`,
-            transformOrigin: 'center center',
-          }}
-          className={`max-h-full max-w-full rounded-lg object-contain transition-transform duration-150 ${
-            feedSource === 'device' && !cameraActive ? 'block' : 'hidden'
-          }`}
-        />
-        <canvas
-          ref={wifiCanvasRef}
-          style={{
-            transform: `${mirrorView ? 'scaleX(-1) ' : ''}scale(${zoomLevel})`,
-            transformOrigin: 'center center',
-          }}
-          className={`max-h-full max-w-full rounded-lg object-contain transition-transform duration-150 ${
-            feedSource === 'wifi' ? 'block' : 'hidden'
-          }`}
-        />
+      {/* 2. Edge-to-Edge Live Viewfinder Stage (pure black framing, no extra bars) */}
+      <div className="relative flex-1 min-h-[260px] bg-black flex items-center justify-center overflow-hidden">
+        {mode === 'id-card' && idA4Preview ? (
+          <div className="flex flex-col items-center justify-center gap-3 p-4 h-full w-full">
+            <div className="relative bg-white rounded-md shadow-2xl p-1 max-h-[48vh] aspect-[210/297] flex items-center justify-center">
+              <img
+                src={idA4Preview}
+                alt="1:1 A4 ID Card Preview"
+                className="max-h-full max-w-full object-contain rounded-sm"
+              />
+              <span className="absolute top-2 right-2 bg-slate-900/80 text-white text-[10px] px-2 py-0.5 rounded">
+                A4 1:1
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              {!idBack && idTemplate !== 'single' && idTemplate !== 'passport' && (
+                <button
+                  type="button"
+                  onClick={() => setIdA4Preview(null)}
+                  className="px-3.5 py-2 rounded-xl bg-white/15 text-xs font-semibold text-white"
+                >
+                  + Back Side
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => handleFinishIdCard(true)}
+                disabled={savingBatch}
+                className="px-6 py-2.5 rounded-xl bg-[#00995a] hover:bg-emerald-500 text-xs font-bold text-white shadow-lg"
+              >
+                {savingBatch ? 'Creating...' : 'Make it now'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIdFront(null);
+                  setIdBack(null);
+                  setIdA4Preview(null);
+                }}
+                className="px-3 py-2 rounded-xl text-xs text-slate-300 hover:text-white"
+              >
+                Reset
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="relative w-full h-full flex items-center justify-center">
+            <div className="relative inline-flex items-center justify-center max-w-full max-h-full">
+              <video
+                ref={videoRef}
+                playsInline
+                muted
+                style={flashMode === 'on' ? { filter: 'brightness(1.08)' } : undefined}
+                className={`max-h-[68vh] w-full object-contain ${
+                  feedSource === 'device' && cameraActive ? 'block' : 'hidden'
+                }`}
+              />
+              <canvas
+                ref={sampleCanvasRef}
+                style={flashMode === 'on' ? { filter: 'brightness(1.08)' } : undefined}
+                className={`max-h-[68vh] max-w-full object-contain ${
+                  feedSource === 'device' && !cameraActive ? 'block' : 'hidden'
+                }`}
+              />
+              <canvas
+                ref={wifiCanvasRef}
+                className={`max-h-[68vh] max-w-full object-contain ${
+                  feedSource === 'wifi' ? 'block' : 'hidden'
+                }`}
+              />
+
+              {/* 3x3 Alignment Grid */}
+              {gridOverlay && (
+                <div className="pointer-events-none absolute inset-0 grid grid-cols-3 grid-rows-3">
+                  {Array.from({ length: 9 }).map((_, i) => (
+                    <div key={i} className="border border-white/15" />
+                  ))}
+                </div>
+              )}
+
+              {/* Live Automatic Green Paper-Edge Polygon */}
+              {autoCropPaper && mode !== 'image' && mode !== 'qr-code' && (
+                <svg
+                  className="pointer-events-none absolute inset-0 w-full h-full"
+                  viewBox="0 0 100 100"
+                  preserveAspectRatio="none"
+                  data-testid="paper-edge-overlay"
+                >
+                  <polygon
+                    points={liveCorners.map((c) => `${c.x * 100},${c.y * 100}`).join(' ')}
+                    fill={paperDetected ? 'rgba(16, 185, 129, 0.14)' : 'transparent'}
+                    stroke={paperDetected ? '#10b981' : 'transparent'}
+                    strokeWidth="0.65"
+                  />
+                  {paperDetected &&
+                    liveCorners.map((c, idx) => (
+                      <circle
+                        key={idx}
+                        cx={c.x * 100}
+                        cy={c.y * 100}
+                        r="1.35"
+                        fill="#10b981"
+                        stroke="#ffffff"
+                        strokeWidth="0.45"
+                      />
+                    ))}
+                </svg>
+              )}
+
+              {/* Book Spine Center Line */}
+              {mode === 'book' && (
+                <div className="pointer-events-none absolute inset-y-0 left-1/2 -translate-x-1/2 w-0.5 border-l-2 border-dashed border-emerald-400/80" />
+              )}
+
+              {/* ID Card Frame Guide */}
+              {mode === 'id-card' && (
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                  <div className="w-[78%] max-w-[300px] aspect-[85.6/53.98] border-2 border-emerald-400/90 rounded-xl shadow-[0_0_0_9999px_rgba(0,0,0,0.45)] flex items-end justify-center pb-2">
+                    <span className="text-[11px] font-medium bg-black/75 text-emerald-300 px-2.5 py-0.5 rounded">
+                      {!idFront ? 'Align Front Side' : 'Align Back Side'}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* QR Code Target Box */}
+              {mode === 'qr-code' && (
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                  <div className="w-48 h-48 border-2 border-emerald-400 rounded-2xl shadow-[0_0_0_9999px_rgba(0,0,0,0.5)]" />
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         <canvas ref={analysisCanvasRef} className="hidden" />
 
-        {feedSource === 'wifi' && (
-          <div className="absolute top-3 left-4 z-10 bg-slate-900/85 border border-emerald-700/60 px-2.5 py-1 rounded-lg text-[11px] text-emerald-200 flex items-center gap-1.5">
-            <Wifi className="w-3 h-3 text-emerald-400" />
-            <span>{wifiCamStatus}</span>
-          </div>
-        )}
-
-        {/* Viewfinder Frame & Alignment Grid Overlay */}
-        <div className="pointer-events-none absolute inset-6 border border-emerald-400/35 rounded-xl flex flex-col justify-between p-3 overflow-hidden">
-          {gridOverlay && (
-            <div className="absolute inset-0 grid grid-cols-3 grid-rows-3">
-              {Array.from({ length: 9 }).map((_, i) => (
-                <div key={i} className="border border-white/10" />
-              ))}
+        {/* Clean Centered White Status Pill ("Searching doc...") matching Oken reference */}
+        {!(mode === 'id-card' && idA4Preview) &&
+          mode !== 'qr-code' &&
+          mode !== 'id-card' &&
+          autoCropPaper &&
+          !paperDetected && (
+            <div className="pointer-events-none absolute top-[44%] left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 bg-white/95 text-slate-900 px-5 py-2 rounded-full text-sm font-medium shadow-lg whitespace-nowrap">
+              Searching doc...
             </div>
           )}
-          <div className="flex justify-between relative z-10">
-            <span className="w-5 h-5 border-t-2 border-l-2 border-emerald-400 rounded-tl" />
-            <span className="w-5 h-5 border-t-2 border-r-2 border-emerald-400 rounded-tr" />
-          </div>
-          <div className="flex justify-between relative z-10">
-            <span className="w-5 h-5 border-b-2 border-l-2 border-emerald-400 rounded-bl" />
-            <span className="w-5 h-5 border-b-2 border-r-2 border-emerald-400 rounded-br" />
-          </div>
-        </div>
 
-        {countdown !== null && (
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <div className="w-20 h-20 rounded-full bg-emerald-950/85 border-2 border-emerald-400 text-white text-3xl font-mono font-bold flex items-center justify-center tabular-nums">
-              {countdown}
+        {flashActive && <div className="absolute inset-0 bg-white/80 pointer-events-none z-30" />}
+
+        {croppingBusy && (
+          <div className="absolute inset-0 bg-black/45 flex items-center justify-center z-20">
+            <div className="bg-white/95 text-slate-900 px-5 py-2 rounded-full text-xs font-semibold shadow-lg">
+              Cropping paper...
             </div>
           </div>
         )}
 
-        {/* Auto Capture HUD */}
-        {mode === 'auto' && (
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-slate-900/90 border border-slate-700 px-3.5 py-1.5 rounded-xl text-xs font-medium flex items-center gap-2">
-            <span
-              className={`w-2 h-2 rounded-full ${
-                autoState === 'ready' || autoState === 'captured'
-                  ? 'bg-emerald-400'
-                  : autoState === 'hold-steady'
-                  ? 'bg-amber-400'
-                  : 'bg-slate-400'
-              }`}
-            />
-            <span>{autoIndicatorText}</span>
-          </div>
-        )}
-
-        {/* Shutter Flash */}
-        {flashActive && <div className="absolute inset-0 bg-white/80 pointer-events-none transition-opacity" />}
-
-        {/* Quick / Status Confirmation Toast */}
-        {statusBanner && (
-          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-emerald-900/95 border border-emerald-700 text-white px-4 py-2 rounded-xl text-xs font-medium flex items-center gap-2 shadow-lg max-w-[90%] truncate">
-            <CheckCircle2 className="w-4 h-4 text-emerald-300 shrink-0" />
-            <span className="truncate">{statusBanner}</span>
+        {(qrResult || extractedSnippet || statusBanner) && (
+          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 bg-black/85 border border-white/15 text-white px-4 py-1.5 rounded-full text-xs font-medium flex items-center gap-2 max-w-[90%]">
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            <span className="truncate">
+              {mode === 'qr-code' && qrResult
+                ? qrResult
+                : mode === 'to-text' && extractedSnippet
+                ? extractedSnippet.slice(0, 80)
+                : statusBanner}
+            </span>
           </div>
         )}
       </div>
 
-      {/* ID Card Preview Tray */}
-      {mode === 'id-card' && (idFront || idBack) && (
-        <div className="px-4 py-2.5 bg-slate-900 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="text-xs">
-              <div className="text-slate-400">Front</div>
-              {idFront ? (
-                <img src={idFront} alt="ID Front" className="h-12 w-20 object-cover rounded border border-emerald-500" />
-              ) : (
-                <div className="h-12 w-20 rounded border border-dashed border-slate-700 flex items-center justify-center text-slate-500">
-                  Pending
-                </div>
-              )}
-            </div>
-            <div className="text-xs">
-              <div className="text-slate-400">Back</div>
-              {idBack ? (
-                <img src={idBack} alt="ID Back" className="h-12 w-20 object-cover rounded border border-emerald-500" />
-              ) : (
-                <div className="h-12 w-20 rounded border border-dashed border-slate-700 flex items-center justify-center text-slate-500">
-                  Optional
-                </div>
-              )}
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
+      {/* ID Card Sub-Template Pills (only in ID Card mode) */}
+      {mode === 'id-card' && (
+        <div className="px-4 py-2 bg-black flex items-center justify-center gap-2 shrink-0">
+          {(
+            [
+              { id: 'single', label: 'Single Side' },
+              { id: 'license', label: 'Driver License' },
+              { id: 'passport', label: 'Passport' },
+            ] as const
+          ).map((tpl) => (
             <button
+              key={tpl.id}
               type="button"
-              onClick={() => {
-                setIdFront(null);
-                setIdBack(null);
-              }}
-              className="px-3 py-2 text-xs text-slate-300 hover:text-white bg-slate-800 rounded-lg"
+              onClick={() => setIdTemplate(tpl.id)}
+              className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                idTemplate === tpl.id
+                  ? 'bg-[#00995a] text-white'
+                  : 'bg-white/10 text-slate-300'
+              }`}
             >
-              Reset
+              {tpl.label}
             </button>
-            <button
-              type="button"
-              onClick={() => handleFinishIdCard(false)}
-              disabled={savingBatch}
-              className="px-3 py-2 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-white rounded-lg"
-            >
-              Save Single Image
-            </button>
-            <button
-              type="button"
-              onClick={() => handleFinishIdCard(true)}
-              disabled={savingBatch}
-              className="px-3.5 py-2 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg"
-            >
-              Combine to PDF
-            </button>
-          </div>
+          ))}
         </div>
       )}
 
-      {/* Batch Session Filmstrip */}
-      {mode === 'batch' && batchPages.length > 0 && (
-        <div className="px-4 py-2.5 bg-slate-900 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div className="flex items-center gap-2 overflow-x-auto max-w-full pb-1">
+      {/* Batch & Book Strip (only when pages are queued) */}
+      {(mode === 'batch' || mode === 'book') && batchPages.length > 0 && (
+        <div className="px-4 py-2 bg-[#111317] border-t border-white/10 flex items-center justify-between gap-3 shrink-0">
+          <div className="flex items-center gap-2 overflow-x-auto">
             {batchPages.map((pg, idx) => (
-              <div key={idx} className="relative shrink-0 group bg-slate-800 rounded-lg p-1 border border-slate-700">
-                <img src={pg} alt={`Page ${idx + 1}`} className="h-14 w-11 object-cover rounded" />
-                <div className="flex items-center justify-between gap-0.5 mt-1 text-[10px] text-slate-300 tabular-nums">
+              <div key={idx} className="relative shrink-0 bg-slate-900 rounded p-0.5 border border-slate-700">
+                <img src={pg} alt={`Page ${idx + 1}`} className="h-10 w-8 object-cover rounded-sm" />
+                <div className="flex items-center justify-center gap-1 mt-0.5 text-[9px] text-slate-300">
                   <button
                     type="button"
                     disabled={idx === 0}
@@ -1038,10 +1240,9 @@ export function ScannerCameraStudio({
                         return copy;
                       })
                     }
-                    className="p-0.5 hover:text-white disabled:opacity-30"
                     aria-label="Move page left"
                   >
-                    <ArrowLeft className="w-3 h-3" />
+                    <ArrowLeft className="w-2.5 h-2.5" />
                   </button>
                   <span>{idx + 1}</span>
                   <button
@@ -1054,18 +1255,17 @@ export function ScannerCameraStudio({
                         return copy;
                       })
                     }
-                    className="p-0.5 hover:text-white disabled:opacity-30"
                     aria-label="Move page right"
                   >
-                    <ArrowRight className="w-3 h-3" />
+                    <ArrowRight className="w-2.5 h-2.5" />
                   </button>
                   <button
                     type="button"
                     onClick={() => setBatchPages((prev) => prev.filter((_, i) => i !== idx))}
-                    className="p-0.5 text-red-400 hover:text-red-300"
                     aria-label="Delete page"
+                    className="text-red-400"
                   >
-                    <Trash2 className="w-3 h-3" />
+                    <Trash2 className="w-2.5 h-2.5" />
                   </button>
                 </div>
               </div>
@@ -1075,23 +1275,82 @@ export function ScannerCameraStudio({
             type="button"
             onClick={handleFinishBatchToPdf}
             disabled={savingBatch}
-            className="px-4 py-2.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl shrink-0"
+            className="px-4 py-2 text-xs font-semibold bg-[#00995a] text-white rounded-full shrink-0"
           >
-            {savingBatch ? 'Building PDF...' : `Combine ${batchPages.length} Pages to PDF`}
+            {savingBatch ? 'Saving...' : `Save PDF (${batchPages.length})`}
           </button>
         </div>
       )}
 
-      {/* Bottom Shutter Control Deck */}
-      <div className="px-5 py-4 bg-slate-900 border-t border-slate-800 flex items-center justify-between gap-4">
+      {/* 3. Exact 5-Mode Bar: Book · To Text · Docs · ID Card · QR Code */}
+      <div className="px-3 pt-2.5 pb-1 bg-black flex items-center justify-center gap-1.5 sm:gap-3 overflow-x-auto shrink-0">
+        {modeTabs.map((t) => {
+          const active = activeModeForPill === t.id;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              data-mode={t.id}
+              onClick={() => onModeChange(t.id)}
+              className={`px-3.5 py-1 rounded-full text-[13px] font-medium whitespace-nowrap shrink-0 transition-colors ${
+                active ? 'bg-[#00995a] text-white font-semibold' : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* 4. Exact Oken Bottom Shutter Deck:  ×  |  White Shutter  |  Import   Import Files */}
+      <div className="px-6 pt-4 pb-6 bg-black flex items-center justify-between shrink-0">
+        <div className="w-24 flex items-center justify-start">
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close Camera"
+            className="w-11 h-11 flex items-center justify-center text-white hover:text-slate-300 active:scale-95 transition-transform"
+          >
+            <X className="w-6 h-6" />
+          </button>
+        </div>
+
         <button
           type="button"
-          onClick={() => fileInputRef.current?.click()}
-          className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-200 min-h-[44px]"
+          onClick={() => void triggerCapture(false)}
+          aria-label="Capture Scan"
+          className="w-[70px] h-[70px] rounded-full border-[3px] border-white p-1.5 flex items-center justify-center active:scale-95 transition-transform shrink-0"
         >
-          <Upload className="w-4 h-4 text-emerald-400" />
-          Import Gallery
+          <span className="w-full h-full rounded-full bg-white block" />
         </button>
+
+        <div className="w-28 flex items-center justify-end gap-4">
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="flex flex-col items-center justify-center gap-1 text-white hover:text-slate-300 min-w-[44px]"
+          >
+            <ImageIcon className="w-5 h-5" />
+            <span className="text-[11px] font-normal whitespace-nowrap">Import</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => docImportInputRef.current?.click()}
+            className="flex flex-col items-center justify-center gap-1 text-white hover:text-slate-300 min-w-[44px]"
+          >
+            <FileInput className="w-5 h-5" />
+            <span className="text-[11px] font-normal whitespace-nowrap">Import Files</span>
+          </button>
+        </div>
+
+        <input
+          ref={docImportInputRef}
+          type="file"
+          accept="image/*,application/pdf"
+          multiple
+          onChange={handleGalleryFiles}
+          className="hidden"
+        />
         <input
           ref={fileInputRef}
           type="file"
@@ -1100,51 +1359,6 @@ export function ScannerCameraStudio({
           onChange={handleGalleryFiles}
           className="hidden"
         />
-
-        <button
-          type="button"
-          onClick={() => {
-            if (timerDelaySec === 0) {
-              void triggerCapture();
-            } else if (countdown === null) {
-              setCountdown(3);
-              let left = 3;
-              const iv = window.setInterval(() => {
-                left -= 1;
-                if (left <= 0) {
-                  window.clearInterval(iv);
-                  setCountdown(null);
-                  void triggerCapture();
-                } else {
-                  setCountdown(left);
-                }
-              }, 1000);
-            }
-          }}
-          aria-label="Capture Scan"
-          className="w-16 h-16 rounded-full bg-white p-1 border-4 border-emerald-500 flex items-center justify-center active:scale-95 transition-transform shadow-lg"
-        >
-          <div className="w-full h-full rounded-full bg-emerald-700 hover:bg-emerald-600 flex items-center justify-center">
-            <Camera className="w-6 h-6 text-white" />
-          </div>
-        </button>
-
-        <div className="text-right min-w-[110px]">
-          <div className="text-xs font-mono tabular-nums text-emerald-400">
-            {mode === 'batch'
-              ? `${batchPages.length} pages`
-              : mode === 'id-card'
-              ? idFront
-                ? idBack
-                  ? '2/2 sides'
-                  : '1/2 front'
-                : '0/2 sides'
-              : `${quickCount} captured`}
-          </div>
-          <div className="text-[11px] text-slate-400">
-            {settings.autoTransfer ? 'Auto-transfer ON' : 'Local save only'}
-          </div>
-        </div>
       </div>
     </div>
   );

@@ -3,6 +3,7 @@ import {
   Copy,
   Download,
   ExternalLink,
+  Image as ImageIcon,
   Laptop,
   Mail,
   MessageCircle,
@@ -14,6 +15,7 @@ import {
 import QRCode from 'qrcode';
 import { useEffect, useState } from 'react';
 import { formatBytes } from '../services/db';
+import { composeLongImage } from '../services/imageProcessor';
 import { downloadDataUrl } from '../services/pdfService';
 import { apiCreateShareLink } from '../services/syncClient';
 import type { ScanDocument } from '../types';
@@ -23,6 +25,7 @@ interface ShareModalProps {
   pairCode: string;
   wsConnected: boolean;
   isOffline: boolean;
+  onDownloadDoc?: (doc: ScanDocument) => void;
   onSendViaLan?: (doc: ScanDocument) => void;
   onClose: () => void;
 }
@@ -32,6 +35,7 @@ export function ShareModal({
   pairCode,
   wsConnected,
   isOffline,
+  onDownloadDoc,
   onSendViaLan,
   onClose,
 }: ShareModalProps) {
@@ -91,7 +95,7 @@ export function ShareModal({
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({
           title: doc.title,
-          text: `${doc.title} — scanned with My Multi Functional Scanner`,
+          text: `${doc.title} — scanned with Oklivo Scanner`,
           files: [file],
         });
         setStatusMsg('Shared via system share sheet.');
@@ -109,6 +113,27 @@ export function ShareModal({
       if ((err as Error)?.name !== 'AbortError') {
         setStatusMsg('Share cancelled or unsupported on this device.');
       }
+    }
+  };
+
+  const handleShareAsLongImage = async () => {
+    try {
+      const sourceImages =
+        doc.pages && doc.pages.length > 0
+          ? doc.pages
+          : doc.mimeType.startsWith('image/')
+          ? [doc.dataUrl]
+          : [];
+      if (sourceImages.length === 0) {
+        setStatusMsg('Long image export requires image pages (PDF-only files can be shared as PDF).');
+        return;
+      }
+      const stitched = await composeLongImage(sourceImages, 0.9);
+      const baseName = doc.fileName.replace(/\.[^.]+$/, '');
+      downloadDataUrl(stitched.dataUrl, `${baseName}_long.jpg`);
+      setStatusMsg(`Long image saved (${formatBytes(stitched.sizeBytes)}).`);
+    } catch {
+      setStatusMsg('Could not generate long image.');
     }
   };
 
@@ -181,8 +206,8 @@ export function ShareModal({
 
           {/* Direct Cross-Platform App Targets */}
           <div>
-            <div className="text-xs font-semibold text-slate-700 mb-2">Direct App & Web Targets</div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div className="text-xs font-semibold text-slate-700 mb-2">Direct App & Export Targets</div>
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
               <a
                 href={whatsappHref}
                 target="_blank"
@@ -212,11 +237,21 @@ export function ShareModal({
               </a>
               <button
                 type="button"
-                onClick={() => downloadDataUrl(doc.dataUrl, doc.fileName)}
+                onClick={() =>
+                  onDownloadDoc ? onDownloadDoc(doc) : downloadDataUrl(doc.dataUrl, doc.fileName)
+                }
                 className="flex flex-col items-center justify-center gap-1.5 p-3 rounded-xl border border-slate-200 hover:border-emerald-600 hover:bg-emerald-50/40 text-xs font-medium text-slate-800 transition-colors"
               >
                 <Download className="w-4 h-4 text-emerald-800" />
-                <span>Download File</span>
+                <span>Download</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleShareAsLongImage}
+                className="flex flex-col items-center justify-center gap-1.5 p-3 rounded-xl border border-slate-200 hover:border-emerald-600 hover:bg-emerald-50/40 text-xs font-medium text-slate-800 transition-colors"
+              >
+                <ImageIcon className="w-4 h-4 text-emerald-700" />
+                <span>Long Image</span>
               </button>
             </div>
           </div>

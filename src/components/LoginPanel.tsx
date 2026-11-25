@@ -101,7 +101,7 @@ export function LoginPanel({ onAuthenticated, onContinueLocal }: LoginPanelProps
             <BrandLogo size={64} />
             <div>
               <div className="text-lg font-display font-bold tracking-tight text-white">
-                My Multi Functional Scanner
+                Oklivo Scanner
               </div>
               <div className="text-xs text-emerald-300">
                 Mobile & Desktop Scanning Ecosystem

@@ -264,7 +264,7 @@ export function AuthModal({
             <div className="min-w-0">
               <div className="text-sm font-display font-bold text-white truncate">{headerTitle}</div>
               <div className="text-[11px] text-emerald-300 truncate">
-                My Multi Functional Scanner · Cloud & Local Vault
+                Oklivo Scanner · Cloud & Local Vault
               </div>
             </div>
           </div>
