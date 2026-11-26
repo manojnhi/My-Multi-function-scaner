@@ -1,8 +1,8 @@
-; Inno Setup Script for My Multi Functional Scanner (Windows Desktop EXE)
+; Inno Setup Script for Oklivo Scanner (Windows Desktop EXE)
 
-#define MyAppName "My Multi Functional Scanner"
+#define MyAppName "Oklivo Scanner"
 #define MyAppVersion "1.0.0"
-#define MyAppPublisher "My Multi Functional Scanner"
+#define MyAppPublisher "Oklivo Scanner"
 #define MyAppExeName "my_multi_functional_scanner.exe"
 
 [Setup]
@@ -14,7 +14,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=..\build\installer
-OutputBaseFilename=MyMultiFunctionalScanner_Setup_{#MyAppVersion}
+OutputBaseFilename=OklivoScanner_Setup_{#MyAppVersion}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern

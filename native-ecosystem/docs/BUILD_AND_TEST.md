@@ -1,4 +1,4 @@
-# My Multi Functional Scanner — Build & Testing Guide
+# Oklivo Scanner — Build & Testing Guide
 
 ## 1. Live Web + Real-Time Sync Stack (Runs Immediately)
 - Stack: React 19 + TypeScript + Tailwind CSS v4 + Express + WebSockets (`ws`) + IndexedDB (`idb`) + Tesseract.js (`eng`/`hin`) + `pdf-lib` + `pdfjs-dist`

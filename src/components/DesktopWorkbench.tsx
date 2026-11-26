@@ -266,9 +266,7 @@ export function DesktopWorkbench({
       {/* Desktop Sidebar */}
       <aside className="hidden lg:flex w-64 flex-col bg-emerald-950 text-slate-100 shrink-0 border-r border-emerald-900">
         <div className="px-5 py-5 flex items-center gap-3 border-b border-emerald-900/70">
-          <div className="bg-white rounded-xl p-1 shadow-sm shrink-0">
-            <BrandLogo size={36} />
-          </div>
+          <BrandLogo size={38} />
           <div className="min-w-0">
             <div className="text-sm font-display font-bold text-white leading-tight truncate">
               Oklivo Scanner

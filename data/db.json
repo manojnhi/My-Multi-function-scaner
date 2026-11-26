@@ -39,10 +39,24 @@
       "devices": [],
       "pendingTransfers": []
     },
+    "246841": {
+      "pairCode": "246841",
+      "desktopName": "Windows Desktop Workbench",
+      "createdAt": "2026-11-26T10:54:24.951Z",
+      "devices": [],
+      "pendingTransfers": []
+    },
     "424663": {
       "pairCode": "424663",
       "desktopName": "Windows Desktop Workbench",
       "createdAt": "2026-11-25T03:40:32.412Z",
+      "devices": [],
+      "pendingTransfers": []
+    },
+    "654257": {
+      "pairCode": "654257",
+      "desktopName": "Windows Desktop Workbench",
+      "createdAt": "2026-11-26T10:57:52.664Z",
       "devices": [],
       "pendingTransfers": []
     },

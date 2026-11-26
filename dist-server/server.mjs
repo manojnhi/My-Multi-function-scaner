@@ -291,7 +291,7 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: "30mb" }));
   app.get("/api/health", (_req, res) => {
-    res.json({ ok: true, app: "My Multi Functional Scanner", timestamp: (/* @__PURE__ */ new Date()).toISOString() });
+    res.json({ ok: true, app: "Oklivo Scanner", timestamp: (/* @__PURE__ */ new Date()).toISOString() });
   });
   app.post("/api/auth/register", (req, res) => {
     const { email, phone, password, displayName, recoveryPhrase } = req.body ?? {};
@@ -1046,7 +1046,7 @@ async function startServer() {
     process.exit(1);
   });
   server.listen(PORT, "0.0.0.0", () => {
-    console.log(`My Multi Functional Scanner running at http://0.0.0.0:${PORT}`);
+    console.log(`Oklivo Scanner running at http://0.0.0.0:${PORT}`);
   });
   if (HTTPS_PORT) {
     try {
@@ -1063,7 +1063,7 @@ async function startServer() {
           ...lanAddresses().map((ip) => ({ type: 7, ip }))
         ];
         const pems = await Promise.resolve(
-          generate([{ name: "commonName", value: "My Multi Functional Scanner" }], {
+          generate([{ name: "commonName", value: "Oklivo Scanner" }], {
             days: 3650,
             keySize: 2048,
             algorithm: "sha256",

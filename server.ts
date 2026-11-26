@@ -303,7 +303,7 @@ async function startServer() {
 
   // Health Check
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, app: 'My Multi Functional Scanner', timestamp: new Date().toISOString() });
+    res.json({ ok: true, app: 'Oklivo Scanner', timestamp: new Date().toISOString() });
   });
 
   // Auth: Register (supports Email, Mobile Number, or both)
@@ -1181,7 +1181,7 @@ async function startServer() {
   });
 
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`My Multi Functional Scanner running at http://0.0.0.0:${PORT}`);
+    console.log(`Oklivo Scanner running at http://0.0.0.0:${PORT}`);
   });
 
   if (HTTPS_PORT) {
@@ -1199,7 +1199,7 @@ async function startServer() {
           ...lanAddresses().map((ip) => ({ type: 7, ip })),
         ];
         const pems = await Promise.resolve(
-          generate([{ name: 'commonName', value: 'My Multi Functional Scanner' }], {
+          generate([{ name: 'commonName', value: 'Oklivo Scanner' }], {
             days: 3650,
             keySize: 2048,
             algorithm: 'sha256',

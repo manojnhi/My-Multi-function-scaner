@@ -107,7 +107,7 @@ class LauncherApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'My Multi Functional Scanner',
+      title: 'Oklivo Scanner',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,

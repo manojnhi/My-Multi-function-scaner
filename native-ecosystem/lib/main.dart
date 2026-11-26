@@ -35,7 +35,7 @@ class ScannerApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'My Multi Functional Scanner',
+      title: 'Oklivo Scanner',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
@@ -218,7 +218,7 @@ class _AndroidHomeState extends State<AndroidHome> {
     if (!_loaded) return const MessageScreen(message: 'Loading...', busy: true);
     if (_address == null || _address!.isEmpty) {
       return MessageScreen(
-        message: 'Enter the address of the PC running\nMy Multi Functional Scanner (same Wi-Fi).',
+        message: 'Enter the address of the PC running\nOklivo Scanner (same Wi-Fi).',
         actionLabel: 'Enter PC address',
         onAction: _changeAddress,
       );
