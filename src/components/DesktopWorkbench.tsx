@@ -266,7 +266,9 @@ export function DesktopWorkbench({
       {/* Desktop Sidebar */}
       <aside className="hidden lg:flex w-64 flex-col bg-emerald-950 text-slate-100 shrink-0 border-r border-emerald-900">
         <div className="px-5 py-5 flex items-center gap-3 border-b border-emerald-900/70">
-          <BrandLogo size={42} />
+          <div className="bg-white rounded-xl p-1 shadow-sm shrink-0">
+            <BrandLogo size={36} />
+          </div>
           <div className="min-w-0">
             <div className="text-sm font-display font-bold text-white leading-tight truncate">
               Oklivo Scanner
@@ -1262,6 +1264,23 @@ export function DesktopWorkbench({
           {view === 'settings' && (
             <div className="max-w-2xl bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
               <h2 className="text-lg font-bold text-slate-900">Application & Offline Preferences</h2>
+
+              <label className="flex items-center justify-between py-2 border-b border-slate-100 text-sm">
+                <div>
+                  <div className="font-medium text-slate-900">Auto-Save New Scans to Google Drive</div>
+                  <div className="text-xs text-slate-500">
+                    Automatically save scanned documents &amp; PDFs to your &ldquo;Oklivo Scanner&rdquo; Google Drive folder when signed in
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={settings.autoDriveBackup ?? true}
+                  onChange={(e) =>
+                    onUpdateSettings({ ...settings, autoDriveBackup: e.target.checked })
+                  }
+                  className="accent-emerald-700 w-4 h-4"
+                />
+              </label>
 
               <label className="flex items-center justify-between py-2 border-b border-slate-100 text-sm">
                 <div>

@@ -22,16 +22,34 @@ import {
   getAllTransfers,
   getCustomFolders,
   getDeviceId,
+  getFolderPrefs,
   getSavedPairCode,
+  getSavedPcAddresses,
+  getSelectedPcAddressId,
   getSettings,
   hashPin,
   saveCustomFolders,
   saveDocument as dbSaveDocument,
+  saveFolderPrefs,
   savePairCode,
+  savePcAddresses,
+  saveSelectedPcAddressId,
   saveSettings as dbSaveSettings,
   saveTransfer as dbSaveTransfer,
   seedSampleDocumentsIfEmpty,
 } from './services/db';
+import {
+  removeSavedPcAddress,
+  upsertSavedPcAddress,
+  type SavedPcAddress,
+} from './services/pcAddressMath';
+import {
+  createFolderInPrefs,
+  deleteFolderFromPrefs,
+  EMPTY_FOLDER_PREFS,
+  renameFolderInPrefs,
+  type FolderPrefs,
+} from './services/folderMath';
 import { GoogleDriveModal } from './components/GoogleDriveModal';
 import {
   clearDriveAccessToken,
@@ -41,7 +59,9 @@ import {
 } from './firebase';
 import {
   ensureScannerDriveFolder,
+  syncPendingDocumentsToGoogleDrive,
   uploadDocumentToDrive,
+  upsertDocumentToDrive,
 } from './services/googleDriveService';
 import {
   apiCloudFetchDocuments,
@@ -80,15 +100,26 @@ export default function App() {
   const [transfers, setTransfers] = useState<TransferJob[]>([]);
   const [settings, setSettings] = useState<ScannerSettings>(DEFAULT_SETTINGS);
   const [customFolders, setCustomFolders] = useState<string[]>([]);
+  const [folderPrefs, setFolderPrefs] = useState<FolderPrefs>(EMPTY_FOLDER_PREFS);
   const [deviceId, setDeviceId] = useState('');
   const [mobileDeviceName, setMobileDeviceName] = useState('Android / Mobile Companion');
 
   // Pairing & WebSocket State
   const [pairCode, setPairCode] = useState(initialUrlPair);
+  const [savedPcAddresses, setSavedPcAddresses] = useState<SavedPcAddress[]>([]);
+  const [selectedPcId, setSelectedPcId] = useState('');
   const [wsConnected, setWsConnected] = useState(false);
   const [desktopOnline, setDesktopOnline] = useState(true);
   const [devices, setDevices] = useState<PairedDevice[]>([]);
   const socketRef = useRef<ScannerSyncSocket | null>(null);
+
+  const selectedPcOrigin = useMemo(
+    () =>
+      savedPcAddresses.find((p) => p.id === selectedPcId)?.address ||
+      savedPcAddresses[0]?.address ||
+      '',
+    [savedPcAddresses, selectedPcId]
+  );
 
   // Network & Offline State
   const [browserOnline, setBrowserOnline] = useState(
@@ -178,12 +209,24 @@ export default function App() {
   useEffect(() => {
     let active = true;
     (async () => {
-      const [loadedSettings, loadedFolders, loadedTransfers, id, savedCode] = await Promise.all([
+      const [
+        loadedSettings,
+        loadedFolders,
+        loadedFolderPrefs,
+        loadedTransfers,
+        id,
+        savedCode,
+        loadedPcs,
+        loadedSelectedPcId,
+      ] = await Promise.all([
         getSettings(),
         getCustomFolders(),
+        getFolderPrefs(),
         getAllTransfers(),
         getDeviceId(),
         getSavedPairCode(),
+        getSavedPcAddresses(),
+        getSelectedPcAddressId(),
       ]);
 
       await seedSampleDocumentsIfEmpty();
@@ -192,9 +235,29 @@ export default function App() {
       if (!active) return;
       setSettings(loadedSettings);
       setCustomFolders(loadedFolders);
+      setFolderPrefs(loadedFolderPrefs);
       setTransfers(loadedTransfers);
       setDocuments(loadedDocs);
       setDeviceId(id);
+
+      let nextPcs = loadedPcs;
+      let nextSelectedPcId = loadedSelectedPcId;
+
+      if (initialUrlPair) {
+        const upserted = upsertSavedPcAddress(loadedPcs, {
+          address: window.location.origin,
+          pairCode: initialUrlPair,
+        });
+        nextPcs = upserted.nextList;
+        if (upserted.savedEntry) {
+          nextSelectedPcId = upserted.savedEntry.id;
+          await savePcAddresses(nextPcs);
+          await saveSelectedPcAddressId(nextSelectedPcId);
+        }
+      }
+
+      setSavedPcAddresses(nextPcs);
+      setSelectedPcId(nextSelectedPcId || nextPcs[0]?.id || '');
 
       if (loadedSettings.appLockPinHash) {
         setLocked(true);
@@ -247,6 +310,50 @@ export default function App() {
       unsubscribe();
     };
   }, [ready, isOffline]);
+
+  // Auto-sync unsynced local scans to Google Drive ("Oklivo Scanner" folder) once per connected Drive OAuth session
+  const lastSyncedDriveTokenRef = useRef('');
+  useEffect(() => {
+    if (!ready || !driveToken || !(settings.autoDriveBackup ?? true) || isOffline) return;
+    if (lastSyncedDriveTokenRef.current === driveToken) return;
+    lastSyncedDriveTokenRef.current = driveToken;
+
+    const unsyncedDocs = documents.filter((d) => d.syncStatus !== 'synced');
+    if (unsyncedDocs.length === 0) return;
+
+    syncPendingDocumentsToGoogleDrive(driveToken, unsyncedDocs)
+      .then(async (syncedIds) => {
+        if (syncedIds.length === 0) return;
+        const idSet = new Set(syncedIds);
+        const syncedList: ScanDocument[] = [];
+        setDocuments((prev) =>
+          prev.map((d) => {
+            if (!idSet.has(d.id)) return d;
+            const next = { ...d, syncStatus: 'synced' } as ScanDocument;
+            syncedList.push(next);
+            return next;
+          })
+        );
+        for (const doc of syncedList) {
+          await dbSaveDocument(doc);
+        }
+        pushNotification(
+          'Google Drive Auto-Saved',
+          `Saved ${syncedIds.length} document(s) to Google Drive folder "Oklivo Scanner".`,
+          'cloud'
+        );
+        showToast(`Saved ${syncedIds.length} document(s) to Google Drive`);
+      })
+      .catch((err) => {
+        lastSyncedDriveTokenRef.current = '';
+        const msg = err instanceof Error ? err.message : '';
+        if (msg.toLowerCase().includes('expired')) {
+          clearDriveAccessToken();
+          setDriveToken('');
+          showToast('Google Drive session expired — reconnect Drive to auto-save.');
+        }
+      });
+  }, [ready, driveToken, settings.autoDriveBackup, isOffline, documents, pushNotification, showToast]);
 
   // Ensure Desktop has an active pairing code once ready
   useEffect(() => {
@@ -302,6 +409,7 @@ export default function App() {
       pairCode,
       deviceId,
       deviceName: workspaceMode === 'mobile' ? mobileDeviceName : 'Windows Desktop Workbench',
+      serverOrigin: workspaceMode === 'mobile' ? selectedPcOrigin : '',
       handlers: {
         onStatusChange: (connected) => {
           setWsConnected(connected);
@@ -360,7 +468,7 @@ export default function App() {
       socketRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, workspaceMode, pairCode, deviceId, isOffline, mobileDeviceName]);
+  }, [ready, workspaceMode, pairCode, deviceId, isOffline, mobileDeviceName, selectedPcOrigin]);
 
   // Save a newly scanned or generated document (instant local save + auto-transfer queue)
   const handleSaveDocument = useCallback(
@@ -451,17 +559,23 @@ export default function App() {
           });
       }
 
-      // Optional automatic Google Drive upload when connected & online
-      if (driveToken && settings.autoDriveBackup && !isOffline) {
+      // Automatic Google Drive upload when connected & online
+      if (driveToken && (settings.autoDriveBackup ?? true) && !isOffline) {
         ensureScannerDriveFolder(driveToken)
           .then((folderId) => uploadDocumentToDrive(driveToken, folderId, newDoc))
           .then(async () => {
             const syncedDoc: ScanDocument = { ...newDoc, syncStatus: 'synced' };
             await dbSaveDocument(syncedDoc);
             setDocuments((prev) => prev.map((d) => (d.id === syncedDoc.id ? syncedDoc : d)));
+            showToast(`Saved "${newDoc.title}" to Google Drive`);
           })
-          .catch(() => {
-            // Keep local if Drive token expired or network transient error
+          .catch((err) => {
+            const msg = err instanceof Error ? err.message : '';
+            if (msg.toLowerCase().includes('expired')) {
+              clearDriveAccessToken();
+              setDriveToken('');
+              showToast('Google Drive session expired — reconnect Drive to auto-save.');
+            }
           });
       }
 
@@ -511,15 +625,30 @@ export default function App() {
     ]
   );
 
-  const handleUpdateDocument = useCallback(async (updated: ScanDocument) => {
-    const next: ScanDocument = {
-      ...updated,
-      version: updated.version + 1,
-      updatedAt: new Date().toISOString(),
-    };
-    await dbSaveDocument(next);
-    setDocuments((prev) => prev.map((d) => (d.id === next.id ? next : d)));
-  }, []);
+  const handleUpdateDocument = useCallback(
+    async (updated: ScanDocument) => {
+      const next: ScanDocument = {
+        ...updated,
+        version: updated.version + 1,
+        updatedAt: new Date().toISOString(),
+      };
+      await dbSaveDocument(next);
+      setDocuments((prev) => prev.map((d) => (d.id === next.id ? next : d)));
+
+      if (driveToken && (settings.autoDriveBackup ?? true) && !isOffline) {
+        upsertDocumentToDrive(driveToken, next)
+          .then(async () => {
+            const synced: ScanDocument = { ...next, syncStatus: 'synced' };
+            await dbSaveDocument(synced);
+            setDocuments((prev) => prev.map((d) => (d.id === synced.id ? synced : d)));
+          })
+          .catch(() => {
+            // Keep local if Drive update fails transiently
+          });
+      }
+    },
+    [driveToken, isOffline, settings.autoDriveBackup]
+  );
 
   const handleDeleteDocument = useCallback(async (id: string) => {
     await dbDeleteDocument(id);
@@ -538,8 +667,61 @@ export default function App() {
       const next = [...customFolders, clean];
       setCustomFolders(next);
       await saveCustomFolders(next);
+      const nextPrefs = createFolderInPrefs(folderPrefs, name.trim() || clean).nextPrefs;
+      setFolderPrefs(nextPrefs);
+      await saveFolderPrefs(nextPrefs);
     },
-    [customFolders]
+    [customFolders, folderPrefs]
+  );
+
+  const handleCreateFolder = useCallback(
+    async (name: string) => {
+      const { nextPrefs } = createFolderInPrefs(folderPrefs, name);
+      setFolderPrefs(nextPrefs);
+      setCustomFolders(nextPrefs.customFolders);
+      await saveFolderPrefs(nextPrefs);
+    },
+    [folderPrefs]
+  );
+
+  const handleRenameFolder = useCallback(
+    async (folderId: string, newName: string) => {
+      const nextPrefs = renameFolderInPrefs(folderPrefs, folderId, newName);
+      setFolderPrefs(nextPrefs);
+      await saveFolderPrefs(nextPrefs);
+    },
+    [folderPrefs]
+  );
+
+  const handleDeleteFolder = useCallback(
+    async (folderId: string) => {
+      const nextPrefs = deleteFolderFromPrefs(folderPrefs, folderId);
+      setFolderPrefs(nextPrefs);
+      setCustomFolders(nextPrefs.customFolders);
+      await saveFolderPrefs(nextPrefs);
+
+      // Reassign any docs in the deleted folder cleanly to Scans so nothing is lost
+      const affected = documents.filter(
+        (d) => d.category === folderId || d.folder === folderId || d.folder.endsWith(`/${folderId}`)
+      );
+      if (affected.length > 0) {
+        const updatedList: ScanDocument[] = [];
+        for (const doc of affected) {
+          const updated: ScanDocument = {
+            ...doc,
+            category: 'Scans',
+            folder: 'Documents/Scans',
+            updatedAt: new Date().toISOString(),
+          };
+          await dbSaveDocument(updated);
+          updatedList.push(updated);
+        }
+        setDocuments((prev) =>
+          prev.map((d) => updatedList.find((u) => u.id === d.id) || d)
+        );
+      }
+    },
+    [documents, folderPrefs]
   );
 
   const handleRegeneratePairCode = useCallback(async () => {
@@ -558,13 +740,61 @@ export default function App() {
     [pairCode]
   );
 
-  const handlePairMobileWithCode = useCallback(async (code: string): Promise<boolean> => {
-    const valid = await verifyPairingCode(code);
-    if (!valid) return false;
-    setPairCode(code);
-    await savePairCode(code);
-    return true;
+  const handleSavePcAddress = useCallback(
+    async (address: string, code?: string): Promise<SavedPcAddress | null> => {
+      const { nextList, savedEntry } = upsertSavedPcAddress(savedPcAddresses, {
+        address,
+        pairCode: code,
+      });
+      if (!savedEntry) return null;
+      setSavedPcAddresses(nextList);
+      setSelectedPcId(savedEntry.id);
+      await savePcAddresses(nextList);
+      await saveSelectedPcAddressId(savedEntry.id);
+      return savedEntry;
+    },
+    [savedPcAddresses]
+  );
+
+  const handleSelectPcAddress = useCallback(async (pc: SavedPcAddress) => {
+    setSelectedPcId(pc.id);
+    await saveSelectedPcAddressId(pc.id);
+    if (pc.pairCode) {
+      setPairCode(pc.pairCode);
+      await savePairCode(pc.pairCode);
+    }
   }, []);
+
+  const handleDeletePcAddress = useCallback(
+    async (id: string) => {
+      const nextList = removeSavedPcAddress(savedPcAddresses, id);
+      setSavedPcAddresses(nextList);
+      await savePcAddresses(nextList);
+      if (selectedPcId === id) {
+        const nextId = nextList[0]?.id || '';
+        setSelectedPcId(nextId);
+        await saveSelectedPcAddressId(nextId);
+      }
+    },
+    [savedPcAddresses, selectedPcId]
+  );
+
+  const handlePairMobileWithCode = useCallback(
+    async (code: string, pcAddress?: string): Promise<boolean> => {
+      const targetOrigin = pcAddress || selectedPcOrigin || window.location.origin;
+      await handleSavePcAddress(targetOrigin, code);
+      try {
+        const valid = await verifyPairingCode(code, targetOrigin);
+        if (!valid) return false;
+        setPairCode(code);
+        await savePairCode(code);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [handleSavePcAddress, selectedPcOrigin]
+  );
 
   const handleDisconnectPc = useCallback(async () => {
     socketRef.current?.disconnect();
@@ -769,9 +999,10 @@ export default function App() {
   if (showLoginPanel && !user) {
     return (
       <LoginPanel
-        onAuthenticated={(token, acc, mode) => {
+        onAuthenticated={(token, acc, mode, driveTok) => {
           setAuthToken(token);
           setUser(acc);
+          if (driveTok) setDriveToken(driveTok);
           if (mode) setWorkspaceMode(mode);
           setShowLoginPanel(false);
           pushNotification('Signed In', `Authenticated as ${acc.displayName} (${acc.email})`, 'cloud');
@@ -836,7 +1067,12 @@ export default function App() {
           deviceName={mobileDeviceName}
           settings={settings}
           user={user}
+          savedPcAddresses={savedPcAddresses}
+          selectedPcId={selectedPcId}
           onDeviceNameChange={setMobileDeviceName}
+          onSavePcAddress={handleSavePcAddress}
+          onSelectPcAddress={handleSelectPcAddress}
+          onDeletePcAddress={handleDeletePcAddress}
           onPairWithCode={handlePairMobileWithCode}
           onDisconnectPc={handleDisconnectPc}
           onSwitchToDesktop={() => setWorkspaceMode('desktop')}
@@ -854,6 +1090,10 @@ export default function App() {
           onRetryTransfer={handleRetryTransfer}
           driveConnected={Boolean(driveToken)}
           onOpenDriveBackup={() => setShowDriveModal(true)}
+          folderPrefs={folderPrefs}
+          onCreateFolder={handleCreateFolder}
+          onRenameFolder={handleRenameFolder}
+          onDeleteFolder={handleDeleteFolder}
         />
       )}
 

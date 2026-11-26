@@ -673,7 +673,7 @@ export function ImageEditorModal({
         </div>
 
         {/* Body */}
-        <div className="flex-1 flex flex-col lg:flex-row min-h-0">
+        <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-hidden">
           {/* Canvas Stage */}
           <div
             onWheel={(e) => {
@@ -681,7 +681,9 @@ export function ImageEditorModal({
               const delta = e.deltaY < 0 ? 0.15 : -0.15;
               setZoom((z) => Math.max(0.5, Math.min(3, Number((z + delta).toFixed(2)))));
             }}
-            className="flex-1 bg-slate-900 flex flex-col items-center justify-center p-4 relative overflow-hidden"
+            className={`h-[46vh] min-h-[230px] shrink-0 md:h-auto md:flex-1 md:min-w-0 md:min-h-0 bg-slate-900 flex flex-col items-center justify-center p-3 md:p-4 relative ${
+              signMode ? 'overflow-y-auto' : 'overflow-hidden'
+            }`}
           >
             <div
               ref={stageRef}
@@ -716,7 +718,7 @@ export function ImageEditorModal({
               <img
                 src={cropOverlayActive ? workingSrc : previewSrc}
                 alt={doc.title}
-                className="max-h-[64vh] w-auto object-contain rounded shadow-lg block"
+                className="max-h-[34vh] sm:max-h-[37vh] md:max-h-[70vh] max-w-full w-auto object-contain rounded shadow-lg block"
                 draggable={false}
               />
 
@@ -911,7 +913,7 @@ export function ImageEditorModal({
           </div>
 
           {/* Controls Sidebar */}
-          <aside className="w-full lg:w-96 border-t lg:border-t-0 lg:border-l border-slate-200 bg-slate-50 p-4 overflow-y-auto space-y-4 shrink-0">
+          <aside className="flex-1 min-h-0 md:flex-none w-full md:w-[340px] lg:w-96 border-t md:border-t-0 md:border-l border-slate-200 bg-slate-50 p-3.5 md:p-4 overflow-y-auto space-y-4">
             {/* Studio Sub-Tabs */}
             <div className="grid grid-cols-4 gap-1 p-1 bg-slate-200/75 rounded-xl">
               <button

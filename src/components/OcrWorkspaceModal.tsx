@@ -86,9 +86,9 @@ export function OcrWorkspaceModal({ document: doc, onClose, onSaveOcr }: OcrWork
           </button>
         </div>
 
-        <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 min-h-0">
+        <div className="flex-1 grid grid-cols-1 grid-rows-2 md:grid-cols-2 md:grid-rows-1 min-h-0">
           {/* Source Image */}
-          <div className="bg-slate-100 p-4 flex items-center justify-center overflow-auto border-b lg:border-b-0 lg:border-r border-slate-200">
+          <div className="bg-slate-100 p-4 flex items-center justify-center overflow-auto border-b md:border-b-0 md:border-r border-slate-200 min-h-0">
             {doc.mimeType === 'application/pdf' ? (
               <div className="text-center p-6 text-sm text-slate-600">
                 PDF document selected. Use PDF Tools → PDF to Images to extract pages for OCR.
@@ -97,7 +97,7 @@ export function OcrWorkspaceModal({ document: doc, onClose, onSaveOcr }: OcrWork
               <img
                 src={doc.dataUrl}
                 alt={doc.title}
-                className="max-h-full w-auto object-contain rounded-lg border border-slate-200 bg-white"
+                className="max-h-full max-w-full w-auto object-contain rounded-lg border border-slate-200 bg-white"
               />
             )}
           </div>

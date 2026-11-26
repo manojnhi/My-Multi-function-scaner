@@ -21,6 +21,7 @@ import {
   LayoutGrid,
   List,
   Monitor,
+  Pencil,
   QrCode,
   RefreshCw,
   ScanLine,
@@ -31,11 +32,19 @@ import {
   Upload,
   User,
   WifiOff,
+  X,
   Zap,
 } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 import { formatBytes } from '../services/db';
 import { formatCompactDocTimestamp, getCategoryChipLabel } from '../services/docViewMath';
+import {
+  buildFolderEntries,
+  countDocsInFolder,
+  EMPTY_FOLDER_PREFS,
+  type FolderPrefs,
+} from '../services/folderMath';
+import type { SavedPcAddress } from '../services/pcAddressMath';
 import { imagesToPdf } from '../services/pdfService';
 import type {
   DocumentCategory,
@@ -62,8 +71,13 @@ interface MobileCompanionProps {
   deviceName: string;
   settings: ScannerSettings;
   user: UserAccount | null;
+  savedPcAddresses?: SavedPcAddress[];
+  selectedPcId?: string;
   onDeviceNameChange: (name: string) => void;
-  onPairWithCode: (code: string) => Promise<boolean>;
+  onSavePcAddress?: (address: string, pairCode?: string) => Promise<SavedPcAddress | null>;
+  onSelectPcAddress?: (pc: SavedPcAddress) => Promise<void>;
+  onDeletePcAddress?: (id: string) => Promise<void>;
+  onPairWithCode: (code: string, pcAddress?: string) => Promise<boolean>;
   onDisconnectPc: () => void;
   onSwitchToDesktop: () => void;
   onOpenAuth: () => void;
@@ -88,6 +102,10 @@ interface MobileCompanionProps {
   onRetryTransfer: (job: TransferJob) => Promise<void>;
   driveConnected: boolean;
   onOpenDriveBackup: () => void;
+  folderPrefs?: FolderPrefs;
+  onCreateFolder?: (name: string) => Promise<void>;
+  onRenameFolder?: (folderId: string, newName: string) => Promise<void>;
+  onDeleteFolder?: (folderId: string) => Promise<void>;
 }
 
 export function MobileCompanion({
@@ -116,8 +134,17 @@ export function MobileCompanion({
   onRetryTransfer,
   driveConnected,
   onOpenDriveBackup,
+  folderPrefs,
+  onCreateFolder,
+  onRenameFolder,
+  onDeleteFolder,
+  savedPcAddresses = [],
+  selectedPcId = '',
+  onSavePcAddress,
+  onSelectPcAddress,
+  onDeletePcAddress,
 }: MobileCompanionProps) {
-  const [view, setView] = useState<MobileView>('dashboard');
+  const [view, setView] = useState<MobileView>('connect-pc');
   const [captureMode, setCaptureMode] = useState<CaptureMode>('document');
   const [docSearch, setDocSearch] = useState('');
   const [showSearchBar, setShowSearchBar] = useState(false);
@@ -128,9 +155,13 @@ export function MobileCompanion({
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
-  const [customLocalFolders, setCustomLocalFolders] = useState<string[]>([]);
+  const [localFolderPrefs, setLocalFolderPrefs] = useState<FolderPrefs>(EMPTY_FOLDER_PREFS);
+  const effectiveFolderPrefs = folderPrefs || localFolderPrefs;
   const [showNewFolderInput, setShowNewFolderInput] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
+  const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
+  const [renameFolderInput, setRenameFolderInput] = useState('');
+  const [confirmDeleteFolderId, setConfirmDeleteFolderId] = useState<string | null>(null);
   const galleryInputRef = useRef<HTMLInputElement | null>(null);
 
   const openCameraInMode = (mode: CaptureMode) => {
@@ -165,18 +196,12 @@ export function MobileCompanion({
   ).length;
 
   const folderSummaries = useMemo(() => {
-    const baseFolders: Array<{ id: string; label: string }> = [
-      { id: 'Scans', label: 'New Docs' },
-      { id: 'ID_Cards', label: 'ID Cards' },
-      { id: 'Receipts', label: 'Receipts' },
-      { id: 'PDFs', label: 'PDF Files' },
-      ...customLocalFolders.map((f) => ({ id: f, label: f })),
-    ];
-    return baseFolders.map((f) => ({
+    const entries = buildFolderEntries(effectiveFolderPrefs);
+    return entries.map((f) => ({
       ...f,
-      count: documents.filter((d) => d.category === f.id || d.folder.endsWith(f.id)).length,
+      count: countDocsInFolder(documents, f.id),
     }));
-  }, [documents, customLocalFolders]);
+  }, [documents, effectiveFolderPrefs]);
 
   const activeFolderLabel =
     activeFolder === 'ALL'
@@ -339,24 +364,34 @@ export function MobileCompanion({
           onClick={() => setView('dashboard')}
           className="flex items-center gap-2 min-w-0"
         >
-          <BrandLogo size={24} />
-          <span className="text-base sm:text-lg font-display font-extrabold tracking-tight text-[#0d8a4b] truncate">
+          <BrandLogo size={28} />
+          <span className="text-base sm:text-lg font-display font-extrabold tracking-tight text-slate-900 truncate">
             Oklivo Scanner
           </span>
         </button>
 
         <div className="flex items-center gap-1 shrink-0">
-          <button
-            type="button"
-            onClick={() => {
-              if (!isDocsActive) setView('dashboard');
-              setShowSearchBar((s) => !s);
-            }}
-            className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-full hover:bg-slate-100 text-slate-800"
-            aria-label="Search documents"
-          >
-            <Search className="w-5 h-5" />
-          </button>
+          {view === 'connect-pc' ? (
+            <button
+              type="button"
+              onClick={() => setView('dashboard')}
+              className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl whitespace-nowrap shrink-0 min-h-[36px]"
+            >
+              Skip
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                if (!isDocsActive) setView('dashboard');
+                setShowSearchBar((s) => !s);
+              }}
+              className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-full hover:bg-slate-100 text-slate-800"
+              aria-label="Search documents"
+            >
+              <Search className="w-5 h-5" />
+            </button>
+          )}
           <button
             type="button"
             onClick={onSwitchToDesktop}
@@ -452,14 +487,16 @@ export function MobileCompanion({
                 </button>
               </div>
 
-              {/* Folder Dropdown Popover */}
+              {/* Folder Dropdown Popover with Rename & Delete Icons */}
               {showFolderMenu && (
-                <div className="absolute top-full left-0 mt-1 w-60 bg-white border border-slate-200 rounded-2xl shadow-xl p-2 z-30 space-y-1">
+                <div className="absolute top-full left-0 mt-1 w-72 bg-white border border-slate-200 rounded-2xl shadow-xl p-2 z-30 space-y-1">
                   <button
                     type="button"
                     onClick={() => {
                       setActiveFolder('ALL');
                       setShowFolderMenu(false);
+                      setRenamingFolderId(null);
+                      setConfirmDeleteFolderId(null);
                     }}
                     className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium ${
                       activeFolder === 'ALL'
@@ -470,27 +507,154 @@ export function MobileCompanion({
                     <span>All docs</span>
                     <span className="tabular-nums text-slate-500">{documents.length}</span>
                   </button>
-                  {folderSummaries.map((f) => (
-                    <button
-                      key={f.id}
-                      type="button"
-                      onClick={() => {
-                        setActiveFolder(f.id);
-                        setShowFolderMenu(false);
-                      }}
-                      className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium ${
-                        activeFolder === f.id
-                          ? 'bg-emerald-50 text-emerald-900 font-semibold'
-                          : 'text-slate-700 hover:bg-slate-50'
-                      }`}
-                    >
-                      <span className="inline-flex items-center gap-2">
-                        <Folder className="w-3.5 h-3.5 text-amber-500" />
-                        {f.label}
-                      </span>
-                      <span className="tabular-nums text-slate-500">{f.count}</span>
-                    </button>
-                  ))}
+                  {folderSummaries.map((f) => {
+                    const isRenaming = renamingFolderId === f.id;
+                    const isDeleting = confirmDeleteFolderId === f.id;
+
+                    if (isRenaming) {
+                      return (
+                        <form
+                          key={f.id}
+                          onSubmit={async (e) => {
+                            e.preventDefault();
+                            const trimmed = renameFolderInput.trim();
+                            if (trimmed) {
+                              if (onRenameFolder) {
+                                await onRenameFolder(f.id, trimmed);
+                              } else {
+                                setLocalFolderPrefs((prev) => ({
+                                  ...prev,
+                                  renamedLabels: { ...prev.renamedLabels, [f.id]: trimmed },
+                                }));
+                              }
+                            }
+                            setRenamingFolderId(null);
+                          }}
+                          className="flex items-center gap-1 px-2 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200"
+                        >
+                          <input
+                            type="text"
+                            value={renameFolderInput}
+                            onChange={(e) => setRenameFolderInput(e.target.value)}
+                            className="flex-1 min-w-0 text-xs px-2 py-1 bg-white border border-emerald-300 rounded-lg focus:outline-none"
+                            aria-label={`New name for ${f.label}`}
+                            autoFocus
+                          />
+                          <button
+                            type="submit"
+                            className="p-1.5 rounded-lg bg-[#0d8a4b] text-white hover:bg-emerald-600 shrink-0"
+                            aria-label="Save folder name"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setRenamingFolderId(null)}
+                            className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-200/70 shrink-0"
+                            aria-label="Cancel rename"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </form>
+                      );
+                    }
+
+                    if (isDeleting) {
+                      return (
+                        <div
+                          key={f.id}
+                          className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl bg-red-50 border border-red-200 text-xs"
+                        >
+                          <span className="text-red-800 font-medium truncate">
+                            Delete &ldquo;{f.label}&rdquo;?
+                          </span>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                if (onDeleteFolder) {
+                                  await onDeleteFolder(f.id);
+                                } else {
+                                  setLocalFolderPrefs((prev) => ({
+                                    ...prev,
+                                    customFolders: prev.customFolders.filter((x) => x !== f.id),
+                                    hiddenDefaults: f.isDefault
+                                      ? [...prev.hiddenDefaults, f.id]
+                                      : prev.hiddenDefaults,
+                                  }));
+                                }
+                                if (activeFolder === f.id) setActiveFolder('ALL');
+                                setConfirmDeleteFolderId(null);
+                              }}
+                              className="px-2 py-1 rounded-lg bg-red-600 hover:bg-red-700 text-white font-semibold"
+                            >
+                              Delete
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteFolderId(null)}
+                              className="px-2 py-1 rounded-lg text-slate-600 hover:bg-white"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div
+                        key={f.id}
+                        className={`w-full flex items-center justify-between gap-1 px-2 py-1 rounded-xl text-xs font-medium ${
+                          activeFolder === f.id
+                            ? 'bg-emerald-50 text-emerald-900 font-semibold'
+                            : 'text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActiveFolder(f.id);
+                            setShowFolderMenu(false);
+                          }}
+                          className="flex-1 min-w-0 flex items-center gap-2 py-1 px-1 text-left"
+                        >
+                          <Folder className="w-4 h-4 text-amber-500 shrink-0" />
+                          <span className="truncate">{f.label}</span>
+                        </button>
+                        <div className="flex items-center gap-0.5 shrink-0">
+                          <span className="tabular-nums text-[11px] text-slate-400 px-1.5">
+                            {f.count}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setConfirmDeleteFolderId(null);
+                              setRenamingFolderId(f.id);
+                              setRenameFolderInput(f.label);
+                            }}
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-emerald-700 hover:bg-emerald-100/70 transition-colors"
+                            aria-label={`Rename ${f.label}`}
+                            title="Rename folder"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRenamingFolderId(null);
+                              setConfirmDeleteFolderId(f.id);
+                            }}
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-red-600 hover:bg-red-100/70 transition-colors"
+                            aria-label={`Delete ${f.label}`}
+                            title="Delete folder"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                   <div className="pt-1 border-t border-slate-100">
                     <button
                       type="button"
@@ -510,11 +674,20 @@ export function MobileCompanion({
 
             {showNewFolderInput && (
               <form
-                onSubmit={(e) => {
+                onSubmit={async (e) => {
                   e.preventDefault();
                   const clean = newFolderName.trim();
-                  if (clean && !customLocalFolders.includes(clean)) {
-                    setCustomLocalFolders((prev) => [...prev, clean]);
+                  if (clean) {
+                    if (onCreateFolder) {
+                      await onCreateFolder(clean);
+                    } else {
+                      setLocalFolderPrefs((prev) => ({
+                        ...prev,
+                        customFolders: prev.customFolders.includes(clean)
+                          ? prev.customFolders
+                          : [...prev.customFolders, clean],
+                      }));
+                    }
                   }
                   setNewFolderName('');
                   setShowNewFolderInput(false);
@@ -847,9 +1020,15 @@ export function MobileCompanion({
               wsConnected={wsConnected}
               desktopOnline={desktopOnline}
               deviceName={deviceName}
+              savedPcAddresses={savedPcAddresses}
+              selectedPcId={selectedPcId}
               onDeviceNameChange={onDeviceNameChange}
+              onSavePcAddress={onSavePcAddress || (async () => null)}
+              onSelectPcAddress={onSelectPcAddress || (async () => {})}
+              onDeletePcAddress={onDeletePcAddress || (async () => {})}
               onPairWithCode={onPairWithCode}
               onDisconnect={onDisconnectPc}
+              onSkip={() => setView('dashboard')}
             />
           </div>
         )}
@@ -978,6 +1157,17 @@ export function MobileCompanion({
                   type="checkbox"
                   checked={settings.autoEnhance}
                   onChange={(e) => onUpdateSettings({ ...settings, autoEnhance: e.target.checked })}
+                  className="accent-emerald-700 w-5 h-5"
+                />
+              </label>
+              <label className="flex items-center justify-between text-sm py-1">
+                <span>Auto-Save Scans to Google Drive</span>
+                <input
+                  type="checkbox"
+                  checked={settings.autoDriveBackup ?? true}
+                  onChange={(e) =>
+                    onUpdateSettings({ ...settings, autoDriveBackup: e.target.checked })
+                  }
                   className="accent-emerald-700 w-5 h-5"
                 />
               </label>

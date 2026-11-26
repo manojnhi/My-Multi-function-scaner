@@ -190,6 +190,35 @@ export async function uploadDocumentToDrive(
   return multipartUpload(accessToken, metadata, blob, existingDriveFileId);
 }
 
+export async function upsertDocumentToDrive(
+  accessToken: string,
+  doc: ScanDocument
+): Promise<DriveBackupFile> {
+  const { folderId, files } = await listDriveBackupFiles(accessToken);
+  const existing = files.find((f) => f.scannerDocId === doc.id);
+  return uploadDocumentToDrive(accessToken, folderId, doc, existing?.id);
+}
+
+export async function syncPendingDocumentsToGoogleDrive(
+  accessToken: string,
+  documents: ScanDocument[]
+): Promise<string[]> {
+  const unsynced = documents.filter((d) => d.syncStatus !== 'synced');
+  if (unsynced.length === 0) return [];
+  const { folderId, files } = await listDriveBackupFiles(accessToken);
+  const byScannerId = new Map<string, DriveBackupFile>();
+  for (const f of files) {
+    if (f.scannerDocId) byScannerId.set(f.scannerDocId, f);
+  }
+  const syncedIds: string[] = [];
+  for (const doc of unsynced) {
+    const existing = byScannerId.get(doc.id);
+    await uploadDocumentToDrive(accessToken, folderId, doc, existing?.id);
+    syncedIds.push(doc.id);
+  }
+  return syncedIds;
+}
+
 export async function syncAllToGoogleDrive(params: {
   accessToken: string;
   documents: ScanDocument[];

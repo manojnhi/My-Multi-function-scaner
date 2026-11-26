@@ -773,3 +773,59 @@ export function getCropPreviewMetrics(
 
   return { widthPx, heightPx, aspectLabel };
 }
+
+export type AutoScanPhase = 'searching' | 'selected' | 'capturing';
+
+export interface AutoScanStepInput {
+  paperDetected: boolean;
+  motionScore: number;
+  sensitivity: number;
+  steadyStreak: number;
+  autoCaptureEnabled: boolean;
+  nowMs: number;
+  lastCaptureAtMs: number;
+  cooldownMs?: number;
+  requiredSteadyTicks?: number;
+}
+
+export interface AutoScanStepResult {
+  phase: AutoScanPhase;
+  nextStreak: number;
+  shouldCapture: boolean;
+  progressPct: number;
+}
+
+/**
+ * Pure state machine for Search -> Auto Document Selection -> Quick Capture flow.
+ */
+export function evaluateAutoScanStep(input: AutoScanStepInput): AutoScanStepResult {
+  if (!input.paperDetected) {
+    return { phase: 'searching', nextStreak: 0, shouldCapture: false, progressPct: 0 };
+  }
+
+  const requiredTicks = input.requiredSteadyTicks ?? 3;
+  const cooldown = input.cooldownMs ?? 3600;
+  const motionThreshold = Math.max(4, 15 - input.sensitivity * 0.9);
+
+  if (!input.autoCaptureEnabled || input.nowMs - input.lastCaptureAtMs < cooldown) {
+    return { phase: 'selected', nextStreak: 0, shouldCapture: false, progressPct: 0 };
+  }
+
+  if (input.motionScore <= motionThreshold) {
+    const nextStreak = input.steadyStreak + 1;
+    const progressPct = Math.min(100, Math.round((nextStreak / requiredTicks) * 100));
+    if (nextStreak >= requiredTicks) {
+      return { phase: 'capturing', nextStreak: 0, shouldCapture: true, progressPct: 100 };
+    }
+    return { phase: 'selected', nextStreak, shouldCapture: false, progressPct };
+  }
+
+  const decayed = Math.max(0, input.steadyStreak - 1);
+  return {
+    phase: 'selected',
+    nextStreak: decayed,
+    shouldCapture: false,
+    progressPct: Math.round((decayed / requiredTicks) * 100),
+  };
+}
+

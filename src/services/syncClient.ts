@@ -1,4 +1,5 @@
 import type { PairedDevice, ScanDocument, UserAccount } from '../types';
+import { parsePcAddressInput, toWebSocketUrl } from './pcAddressMath';
 
 export interface WsPresencePayload {
   devices: PairedDevice[];
@@ -21,6 +22,7 @@ export class ScannerSyncSocket {
   private pairCode = '';
   private deviceId = '';
   private deviceName = '';
+  private serverOrigin = '';
   private handlers: SyncWsHandlers = {};
 
   connect(params: {
@@ -28,12 +30,14 @@ export class ScannerSyncSocket {
     pairCode: string;
     deviceId: string;
     deviceName: string;
+    serverOrigin?: string;
     handlers: SyncWsHandlers;
   }): void {
     this.role = params.role;
     this.pairCode = params.pairCode;
     this.deviceId = params.deviceId;
     this.deviceName = params.deviceName;
+    this.serverOrigin = params.serverOrigin || '';
     this.handlers = params.handlers;
     this.shouldReconnect = true;
     this.openSocket();
@@ -50,7 +54,8 @@ export class ScannerSyncSocket {
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
+    const customWs = this.serverOrigin ? toWebSocketUrl(this.serverOrigin) : '';
+    const wsUrl = customWs || `${protocol}//${window.location.host}/ws`;
     const ws = new WebSocket(wsUrl);
     this.ws = ws;
 
@@ -149,8 +154,13 @@ export async function createPairingChannel(
   return res.json();
 }
 
-export async function verifyPairingCode(code: string): Promise<boolean> {
-  const res = await fetch(`/api/pairing/${encodeURIComponent(code)}`);
+export async function verifyPairingCode(code: string, serverOrigin?: string): Promise<boolean> {
+  const parsed = serverOrigin ? parsePcAddressInput(serverOrigin) : null;
+  const base =
+    parsed && parsed.address.toLowerCase() !== window.location.origin.toLowerCase()
+      ? parsed.address
+      : '';
+  const res = await fetch(`${base}/api/pairing/${encodeURIComponent(code)}`);
   return res.ok;
 }
 

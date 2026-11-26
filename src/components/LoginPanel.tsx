@@ -23,7 +23,12 @@ import type { UserAccount, WorkspaceMode } from '../types';
 import { BrandLogo } from './BrandLogo';
 
 interface LoginPanelProps {
-  onAuthenticated: (token: string, user: UserAccount, chosenWorkspace?: WorkspaceMode) => void;
+  onAuthenticated: (
+    token: string,
+    user: UserAccount,
+    chosenWorkspace?: WorkspaceMode,
+    driveAccessToken?: string
+  ) => void;
   onContinueLocal: (chosenWorkspace: WorkspaceMode) => void;
 }
 
@@ -49,10 +54,10 @@ export function LoginPanel({ onAuthenticated, onContinueLocal }: LoginPanelProps
     setBusy(true);
     setError('');
     try {
-      const { idToken, firebaseUser } = await signInWithSocialProvider(providerId);
+      const { idToken, firebaseUser, driveAccessToken } = await signInWithSocialProvider(providerId);
       const res = await apiFirebaseAuth(idToken);
       await syncFirebaseProfileToFirestore(firebaseUser, providerId, res.user.phone);
-      onAuthenticated(res.token, res.user, targetWorkspace);
+      onAuthenticated(res.token, res.user, targetWorkspace, driveAccessToken);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Social sign-in failed');
     } finally {

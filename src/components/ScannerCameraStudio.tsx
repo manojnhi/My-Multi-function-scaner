@@ -14,6 +14,7 @@ import {
   Zap,
   ZapOff,
 } from 'lucide-react';
+import jsQR from 'jsqr';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getSavedWifiCameras, saveWifiCameras } from '../services/db';
 import {
@@ -27,7 +28,9 @@ import {
 } from '../services/imageProcessor';
 import { runOcrExtraction } from '../services/ocrService';
 import {
+  type AutoScanPhase,
   defaultPaperCorners,
+  evaluateAutoScanStep,
   OKEN_SCENE_PRESETS,
   type OkenScenePresetId,
   smoothCorners,
@@ -148,8 +151,17 @@ export function ScannerCameraStudio({
   const [pendingReview, setPendingReview] = useState<PendingReview | null>(null);
   const [croppingBusy, setCroppingBusy] = useState(false);
 
-  // Auto capture toggle (hands-free mode)
-  const [autoEnabled, setAutoEnabled] = useState(mode === 'auto');
+  // Auto search -> auto selection -> quick capture (enabled by default in scan modes)
+  const isAutoCapableMode =
+    mode === 'document' ||
+    mode === 'auto' ||
+    mode === 'quick' ||
+    mode === 'to-text' ||
+    mode === 'book';
+  const [autoEnabled, setAutoEnabled] = useState(isAutoCapableMode);
+  const [autoPhase, setAutoPhase] = useState<AutoScanPhase>('searching');
+  const [lockProgressPct, setLockProgressPct] = useState(0);
+  const [autoPausedAfterCapture, setAutoPausedAfterCapture] = useState(false);
   const [sensitivity] = useState(settings.autoCaptureSensitivity || 7);
 
   // ID Card 1:1 A4 Maker state
@@ -170,7 +182,16 @@ export function ScannerCameraStudio({
   const docImportInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    setAutoEnabled(mode === 'auto');
+    setAutoEnabled(
+      mode === 'document' ||
+        mode === 'auto' ||
+        mode === 'quick' ||
+        mode === 'to-text' ||
+        mode === 'book'
+    );
+    setAutoPausedAfterCapture(false);
+    setAutoPhase('searching');
+    setLockProgressPct(0);
   }, [mode]);
 
   useEffect(() => {
@@ -401,6 +422,27 @@ export function ScannerCameraStudio({
 
       if (mode === 'qr-code') {
         try {
+          const img = new Image();
+          img.src = rawDataUrl;
+          await new Promise((r) => (img.onload = r));
+
+          const qCanvas = document.createElement('canvas');
+          qCanvas.width = img.width;
+          qCanvas.height = img.height;
+          const qCtx = qCanvas.getContext('2d', { willReadFrequently: true });
+          if (qCtx) {
+            qCtx.drawImage(img, 0, 0);
+            const imgData = qCtx.getImageData(0, 0, qCanvas.width, qCanvas.height);
+            const jsHit = jsQR(imgData.data, qCanvas.width, qCanvas.height, {
+              inversionAttempts: 'attemptBoth',
+            });
+            if (jsHit?.data) {
+              setQrResult(jsHit.data);
+              setStatusBanner(`QR decoded: ${jsHit.data.slice(0, 48)}`);
+              return;
+            }
+          }
+
           const Detector = (
             window as unknown as {
               BarcodeDetector?: new (opts?: { formats?: string[] }) => {
@@ -409,9 +451,6 @@ export function ScannerCameraStudio({
             }
           ).BarcodeDetector;
           if (Detector) {
-            const img = new Image();
-            img.src = rawDataUrl;
-            await new Promise((r) => (img.onload = r));
             const det = new Detector({ formats: ['qr_code', 'code_128', 'ean_13'] });
             const found = await det.detect(img);
             if (found.length > 0 && found[0].rawValue) {
@@ -428,7 +467,8 @@ export function ScannerCameraStudio({
 
       setCroppingBusy(true);
       try {
-        const { croppedUrl, corners } = await cropToPaperEdges(rawDataUrl);
+        const hintCorners = paperDetected ? liveCornersRef.current : undefined;
+        const { croppedUrl, corners } = await cropToPaperEdges(rawDataUrl, hintCorners);
 
         if (mode === 'id-card') {
           if (!idFront) {
@@ -465,32 +505,12 @@ export function ScannerCameraStudio({
         const titlePrefix =
           mode === 'to-text'
             ? 'OCR Scan'
-            : mode === 'auto'
-            ? 'Auto Scan'
+            : mode === 'auto' || isAutoTrigger
+            ? 'Quick Scan'
             : 'Document';
 
-        if (isAutoTrigger && autoEnabled) {
-          setQuickCount((c) => c + 1);
-          const presetOut = await applyOkenScenePreset(croppedUrl, defaultPreset, {
-            quality: settings.jpegQuality,
-            format: settings.defaultFormat,
-            maxWidth: hdEnabled ? 1700 : 1200,
-          });
-          const ext =
-            settings.defaultFormat === 'image/png'
-              ? 'png'
-              : settings.defaultFormat === 'image/webp'
-              ? 'webp'
-              : 'jpg';
-          await onQuickCaptureSave({
-            dataUrl: presetOut.dataUrl,
-            title: `${titlePrefix} #${quickCount + 1}`,
-            category: targetCategory,
-            mimeType: settings.defaultFormat,
-            fileExtension: ext,
-          });
-          setStatusBanner('Paper auto-cropped & saved.');
-          return;
+        if (isAutoTrigger && !cameraActive && feedSource === 'device') {
+          setAutoPausedAfterCapture(true);
         }
 
         setPendingReview({
@@ -526,7 +546,7 @@ export function ScannerCameraStudio({
     ]
   );
 
-  // Live Paper-Edge Detection & optional Auto-Capture polling loop
+  // Live Search -> Auto Document Selection -> Quick Capture polling loop
   useEffect(() => {
     if (pendingReview) return;
 
@@ -557,11 +577,13 @@ export function ScannerCameraStudio({
       aCanvas.height = ah;
       ctx.drawImage(sourceEl, 0, 0, aw, ah);
 
-      if (autoCropPaper && mode !== 'image' && mode !== 'qr-code') {
+      let isPaperNow = false;
+      if (autoCropPaper && mode !== 'image' && mode !== 'qr-code' && mode !== 'id-card') {
         const edgeRes = detectLiveFrameCorners(aCanvas);
+        isPaperNow = edgeRes.detected;
         setPaperDetected(edgeRes.detected);
         if (edgeRes.detected) {
-          const smoothed = smoothCorners(liveCornersRef.current, edgeRes.corners, 0.42);
+          const smoothed = smoothCorners(liveCornersRef.current, edgeRes.corners, 0.48);
           liveCornersRef.current = smoothed;
           setLiveCorners(smoothed);
         } else {
@@ -573,31 +595,36 @@ export function ScannerCameraStudio({
         setPaperDetected(false);
       }
 
-      if (!autoEnabled) return;
+      const stability = analyzeFrameStability(aCanvas, prevGrayRef.current, sensitivity);
+      prevGrayRef.current = stability.currentGray;
 
-      const res = analyzeFrameStability(aCanvas, prevGrayRef.current, sensitivity);
-      prevGrayRef.current = res.currentGray;
+      const step = evaluateAutoScanStep({
+        paperDetected: isPaperNow,
+        motionScore: stability.motionScore,
+        sensitivity,
+        steadyStreak,
+        autoCaptureEnabled: autoEnabled && !autoPausedAfterCapture,
+        nowMs: Date.now(),
+        lastCaptureAtMs: lastAutoCaptureAtRef.current,
+        cooldownMs: 3600,
+        requiredSteadyTicks: 5,
+      });
 
-      if (res.status === 'ready') {
-        steadyStreak += 1;
-        if (steadyStreak >= 3) {
-          const now = Date.now();
-          if (now - lastAutoCaptureAtRef.current > 3800) {
-            lastAutoCaptureAtRef.current = now;
-            steadyStreak = 0;
-            void triggerCapture(true);
-            return;
-          }
-        }
-      } else {
-        steadyStreak = Math.max(0, steadyStreak - 1);
+      steadyStreak = step.nextStreak;
+      setAutoPhase(step.phase);
+      setLockProgressPct(step.progressPct);
+
+      if (step.shouldCapture) {
+        lastAutoCaptureAtRef.current = Date.now();
+        void triggerCapture(true);
       }
-    }, 280);
+    }, 260);
 
     return () => window.clearInterval(interval);
   }, [
     autoCropPaper,
     autoEnabled,
+    autoPausedAfterCapture,
     cameraActive,
     feedSource,
     mode,
@@ -1161,15 +1188,49 @@ export function ScannerCameraStudio({
 
         <canvas ref={analysisCanvasRef} className="hidden" />
 
-        {/* Clean Centered White Status Pill ("Searching doc...") matching Oken reference */}
+        {/* Live Search -> Auto Document Selection -> Quick Capture Pill */}
         {!(mode === 'id-card' && idA4Preview) &&
           mode !== 'qr-code' &&
           mode !== 'id-card' &&
-          autoCropPaper &&
-          !paperDetected && (
-            <div className="pointer-events-none absolute top-[44%] left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 bg-white/95 text-slate-900 px-5 py-2 rounded-full text-sm font-medium shadow-lg whitespace-nowrap">
-              Searching doc...
-            </div>
+          autoCropPaper && (
+            <>
+              {!paperDetected && (
+                <div className="pointer-events-none absolute top-[44%] left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 bg-white/95 text-slate-900 px-5 py-2 rounded-full text-sm font-medium shadow-lg whitespace-nowrap">
+                  Searching doc...
+                </div>
+              )}
+              {paperDetected && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (autoPausedAfterCapture) {
+                      setAutoPausedAfterCapture(false);
+                      lastAutoCaptureAtRef.current = 0;
+                    } else {
+                      setAutoEnabled((v) => !v);
+                    }
+                  }}
+                  className="absolute top-3 left-1/2 -translate-x-1/2 z-10 bg-black/80 border border-emerald-400/60 text-white px-3.5 py-1.5 rounded-full text-xs font-medium shadow-lg flex items-center gap-2 whitespace-nowrap hover:bg-black transition-colors"
+                >
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      autoPhase === 'capturing'
+                        ? 'bg-emerald-400 animate-ping'
+                        : 'bg-emerald-400'
+                    }`}
+                  />
+                  <span>
+                    {autoPausedAfterCapture
+                      ? 'Document selected · Tap for Quick Capture'
+                      : autoEnabled
+                      ? autoPhase === 'capturing'
+                        ? 'Quick Capturing...'
+                        : `Document selected · Quick capture (${lockProgressPct}%)`
+                      : 'Document selected (Manual shutter)'}
+                  </span>
+                </button>
+              )}
+            </>
           )}
 
         {flashActive && <div className="absolute inset-0 bg-white/80 pointer-events-none z-30" />}

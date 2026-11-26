@@ -9,6 +9,29 @@
       "devices": [],
       "pendingTransfers": []
     },
+    "211296": {
+      "pairCode": "211296",
+      "desktopName": "Windows Desktop Workbench",
+      "createdAt": "2026-11-26T10:28:44.245Z",
+      "devices": [
+        {
+          "id": "85b57dbd-4063-4fb3-ae0f-799eeb28acec",
+          "name": "Android / Mobile Companion",
+          "platform": "Mobile Web",
+          "connected": false,
+          "lastSeen": "2026-11-26T10:29:26.429Z",
+          "pairedAt": "2026-11-26T10:28:51.346Z"
+        }
+      ],
+      "pendingTransfers": []
+    },
+    "215111": {
+      "pairCode": "215111",
+      "desktopName": "Windows Desktop Workbench",
+      "createdAt": "2026-11-26T09:57:41.578Z",
+      "devices": [],
+      "pendingTransfers": []
+    },
     "245108": {
       "pairCode": "245108",
       "desktopName": "Windows Desktop Workbench",
@@ -51,6 +74,20 @@
       "devices": [],
       "pendingTransfers": []
     },
+    "851897": {
+      "pairCode": "851897",
+      "desktopName": "Windows Desktop Workbench",
+      "createdAt": "2026-11-26T10:29:43.270Z",
+      "devices": [],
+      "pendingTransfers": []
+    },
+    "860336": {
+      "pairCode": "860336",
+      "desktopName": "Windows Desktop Workbench",
+      "createdAt": "2026-11-26T09:05:06.165Z",
+      "devices": [],
+      "pendingTransfers": []
+    },
     "862290": {
       "pairCode": "862290",
       "desktopName": "Windows Desktop Workbench",
@@ -63,6 +100,38 @@
           "connected": false,
           "lastSeen": "2026-11-25T04:13:10.353Z",
           "pairedAt": "2026-11-25T04:13:07.612Z"
+        }
+      ],
+      "pendingTransfers": []
+    },
+    "955011": {
+      "pairCode": "955011",
+      "desktopName": "Windows Desktop Workbench",
+      "createdAt": "2026-11-26T10:27:54.638Z",
+      "devices": [
+        {
+          "id": "aa80f53f-41d1-409c-abb0-a3e111fbb9d6",
+          "name": "Android / Mobile Companion",
+          "platform": "Mobile Web",
+          "connected": false,
+          "lastSeen": "2026-11-26T10:28:08.960Z",
+          "pairedAt": "2026-11-26T10:28:02.905Z"
+        }
+      ],
+      "pendingTransfers": []
+    },
+    "955972": {
+      "pairCode": "955972",
+      "desktopName": "Windows Desktop Workbench",
+      "createdAt": "2026-11-26T10:43:11.491Z",
+      "devices": [
+        {
+          "id": "536459a6-7550-4997-b555-341bc24a564b",
+          "name": "Android / Mobile Companion",
+          "platform": "Mobile Web",
+          "connected": false,
+          "lastSeen": "2026-11-26T10:43:26.489Z",
+          "pairedAt": "2026-11-26T10:43:21.351Z"
         }
       ],
       "pendingTransfers": []

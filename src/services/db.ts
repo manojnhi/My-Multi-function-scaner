@@ -30,6 +30,7 @@ export const DEFAULT_SETTINGS: ScannerSettings = {
   namingTemplate: 'Scan_YYYY-MM-DD_HH-mm-ss',
   retainMobileCopy: true,
   autoCloudBackup: false,
+  autoDriveBackup: true,
   offlineModeSimulated: false,
   autoCaptureSensitivity: 7,
   ocrDefaultLang: 'eng+hin',
@@ -166,13 +167,20 @@ export async function getSettings(): Promise<ScannerSettings> {
   const db = await getDb();
   const row = await db.get('meta', 'settings');
   if (!row || !row.value) return { ...DEFAULT_SETTINGS };
-  return { ...DEFAULT_SETTINGS, ...(row.value as Partial<ScannerSettings>) };
+  const merged = { ...DEFAULT_SETTINGS, ...(row.value as Partial<ScannerSettings>) };
+  return {
+    ...merged,
+    autoDriveBackup: merged.autoDriveBackup ?? true,
+  };
 }
 
 export async function saveSettings(settings: ScannerSettings): Promise<void> {
   const db = await getDb();
   await db.put('meta', { key: 'settings', value: settings });
 }
+
+import { EMPTY_FOLDER_PREFS, type FolderPrefs } from './folderMath';
+import type { SavedPcAddress } from './pcAddressMath';
 
 export async function getCustomFolders(): Promise<string[]> {
   const db = await getDb();
@@ -183,6 +191,27 @@ export async function getCustomFolders(): Promise<string[]> {
 export async function saveCustomFolders(folders: string[]): Promise<void> {
   const db = await getDb();
   await db.put('meta', { key: 'custom_folders', value: folders });
+}
+
+export async function getFolderPrefs(): Promise<FolderPrefs> {
+  const db = await getDb();
+  const row = await db.get('meta', 'folder_prefs');
+  if (row && row.value && typeof row.value === 'object') {
+    const val = row.value as Partial<FolderPrefs>;
+    return {
+      customFolders: Array.isArray(val.customFolders) ? val.customFolders : [],
+      renamedLabels: val.renamedLabels && typeof val.renamedLabels === 'object' ? val.renamedLabels : {},
+      hiddenDefaults: Array.isArray(val.hiddenDefaults) ? val.hiddenDefaults : [],
+    };
+  }
+  const legacyCustom = await getCustomFolders();
+  return { ...EMPTY_FOLDER_PREFS, customFolders: legacyCustom };
+}
+
+export async function saveFolderPrefs(prefs: FolderPrefs): Promise<void> {
+  const db = await getDb();
+  await db.put('meta', { key: 'folder_prefs', value: prefs });
+  await db.put('meta', { key: 'custom_folders', value: prefs.customFolders });
 }
 
 export async function getDeviceId(): Promise<string> {
@@ -203,6 +232,28 @@ export async function getSavedPairCode(): Promise<string> {
 export async function savePairCode(code: string): Promise<void> {
   const db = await getDb();
   await db.put('meta', { key: 'pair_code', value: code });
+}
+
+export async function getSavedPcAddresses(): Promise<SavedPcAddress[]> {
+  const db = await getDb();
+  const row = await db.get('meta', 'saved_pc_addresses');
+  return row && Array.isArray(row.value) ? (row.value as SavedPcAddress[]) : [];
+}
+
+export async function savePcAddresses(list: SavedPcAddress[]): Promise<void> {
+  const db = await getDb();
+  await db.put('meta', { key: 'saved_pc_addresses', value: list });
+}
+
+export async function getSelectedPcAddressId(): Promise<string> {
+  const db = await getDb();
+  const row = await db.get('meta', 'selected_pc_address_id');
+  return row && typeof row.value === 'string' ? row.value : '';
+}
+
+export async function saveSelectedPcAddressId(id: string): Promise<void> {
+  const db = await getDb();
+  await db.put('meta', { key: 'selected_pc_address_id', value: id });
 }
 
 export const DEFAULT_WIFI_CAMERAS: WifiCameraSource[] = [

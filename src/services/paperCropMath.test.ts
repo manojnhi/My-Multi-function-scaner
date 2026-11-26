@@ -173,3 +173,56 @@ test('getCropPreviewMetrics detects A4 Portrait aspect and OKEN_SCENE_PRESETS in
     ['Original', 'Lighten', 'Auto', 'HD Clear', 'B&W', 'Black']
   );
 });
+
+import { evaluateAutoScanStep } from './paperCropMath';
+
+test('evaluateAutoScanStep transitions searching -> selected -> capturing cleanly', () => {
+  const s0 = evaluateAutoScanStep({
+    paperDetected: false,
+    motionScore: 0,
+    sensitivity: 7,
+    steadyStreak: 0,
+    autoCaptureEnabled: true,
+    nowMs: 10000,
+    lastCaptureAtMs: 0,
+  });
+  assert.equal(s0.phase, 'searching');
+  assert.equal(s0.shouldCapture, false);
+
+  const s1 = evaluateAutoScanStep({
+    paperDetected: true,
+    motionScore: 1.5,
+    sensitivity: 7,
+    steadyStreak: s0.nextStreak,
+    autoCaptureEnabled: true,
+    nowMs: 10250,
+    lastCaptureAtMs: 0,
+  });
+  assert.equal(s1.phase, 'selected');
+  assert.equal(s1.nextStreak, 1);
+
+  const s2 = evaluateAutoScanStep({
+    paperDetected: true,
+    motionScore: 1.2,
+    sensitivity: 7,
+    steadyStreak: s1.nextStreak,
+    autoCaptureEnabled: true,
+    nowMs: 10500,
+    lastCaptureAtMs: 0,
+  });
+  assert.equal(s2.phase, 'selected');
+  assert.equal(s2.nextStreak, 2);
+
+  const s3 = evaluateAutoScanStep({
+    paperDetected: true,
+    motionScore: 1.0,
+    sensitivity: 7,
+    steadyStreak: s2.nextStreak,
+    autoCaptureEnabled: true,
+    nowMs: 10750,
+    lastCaptureAtMs: 0,
+  });
+  assert.equal(s3.phase, 'capturing');
+  assert.equal(s3.shouldCapture, true);
+});
+
